@@ -1,0 +1,32 @@
+[package]
+name = "jarvis"
+version = "1.0.0"
+description = "JARVIS AI Operating System - native desktop shell"
+edition = "2021"
+
+[lib]
+name = "jarvis_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "JARVIS"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-notification = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["time"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

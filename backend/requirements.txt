@@ -1,0 +1,109 @@
+# ==========================================
+# JARVIS AI Operating System - Backend
+# Python 3.12 Compatible
+# ==========================================
+
+
+# =====================
+# Core Framework
+# =====================
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.32
+
+
+# =====================
+# AI & LLM
+# =====================
+
+ollama==0.6.2
+
+# Embeddings / Semantic Memory
+sentence-transformers==3.3.1
+
+# Vector Database
+chromadb==0.5.23
+
+# Validation / Config
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+
+# =====================
+# Database & Memory
+# =====================
+
+sqlalchemy==2.0.36
+alembic==1.14.0
+aiosqlite==0.22.1
+
+
+# =====================
+# Real-time Communication
+# =====================
+
+python-socketio[asyncio_mode]==5.12.0
+python-engineio==4.11.2
+websockets==14.1
+
+
+# =====================
+# Voice Recognition
+# =====================
+
+faster-whisper==1.1.1
+openai-whisper==20250625
+sounddevice==0.5.1
+numpy==2.1.3
+
+
+# =====================
+# Text To Speech
+# =====================
+
+# Piper TTS installato separatamente
+
+
+# =====================
+# System Automation
+# =====================
+
+psutil==6.1.1
+pyautogui==0.9.54
+pygetwindow==0.0.9
+
+opencv-python==4.10.0.84
+pillow==11.0.0
+
+pywin32==308
+
+
+# =====================
+# File Processing
+# =====================
+
+pypdf==5.1.0
+python-docx==1.1.2
+
+beautifulsoup4==4.12.3
+requests==2.32.3
+
+
+# =====================
+# Utilities
+# =====================
+
+python-dotenv==1.0.1
+loguru==0.7.3
+
+tenacity==9.0.0
+aiofiles==24.1.0
+
+
+# =====================
+# Testing
+# =====================
+
+pytest==8.3.4
+pytest-asyncio==0.25.0

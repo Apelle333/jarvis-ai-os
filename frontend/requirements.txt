@@ -1,0 +1,2 @@
+# Frontend dependencies are managed through package.json
+# This file is for consistency with the backend structure
