@@ -4,7 +4,7 @@ Main intelligence system that coordinates all components
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -37,6 +37,13 @@ class SystemState(str, Enum):
     ERROR = "error"
 
 
+class CoreStatus(str, Enum):
+    """Runtime core readiness states"""
+    READY = "ready"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+
+
 class JARVIS_Brain:
     """
     Central intelligence system of JARVIS
@@ -58,6 +65,9 @@ class JARVIS_Brain:
 
         self.is_initialized = False
         self.is_shutting_down = False
+        self.core_status = CoreStatus.UNAVAILABLE
+        self.core_status_reasons: List[str] = []
+        self.core_component_health: Dict[str, Any] = {}
 
         self.logger = logging.getLogger(__name__)
 
@@ -122,9 +132,18 @@ class JARVIS_Brain:
             await self.personality.initialize()
 
             # Register specialist agents with the swarm
-            await self._register_agents()
+            agent_errors: List[str] = []
+            try:
+                await self._register_agents()
+            except Exception as agent_error:
+                agent_errors.append(str(agent_error))
+                self.logger.warning(
+                    "Agent registration incomplete (continuing in degraded mode): %s",
+                    agent_error,
+                )
 
             self.is_initialized = True
+            self._evaluate_core_status(agent_errors=agent_errors)
             self.logger.info(
                 "JARVIS Brain initialized successfully"
             )
@@ -135,6 +154,8 @@ class JARVIS_Brain:
                 exc_info=True
             )
             self.state = SystemState.ERROR
+            self.core_status = CoreStatus.UNAVAILABLE
+            self.core_status_reasons = [str(e)]
             raise
 
 
@@ -157,6 +178,89 @@ class JARVIS_Brain:
             f"Registered {len(agent_instances)} agents with the swarm"
         )
 
+    def _collect_core_health(self) -> Dict[str, Any]:
+        """Collect health information for core subcomponents."""
+        health: Dict[str, Any] = {}
+
+        sqlite_ok = bool(
+            self.memory_manager.sqlite_memory is not None
+            and getattr(self.memory_manager.sqlite_memory, "is_initialized", False)
+        )
+        health["sqlite_memory"] = {
+            "available": sqlite_ok,
+            "detail": "initialized" if sqlite_ok else "unavailable",
+        }
+
+        vector_ok = bool(
+            self.memory_manager.vector_memory is not None
+            and getattr(self.memory_manager.vector_memory, "is_initialized", False)
+        )
+        health["vector_memory"] = {
+            "available": vector_ok,
+            "detail": "initialized" if vector_ok else "unavailable",
+        }
+
+        monitor_ok = bool(
+            self.system_monitor is not None
+            and getattr(self.system_monitor, "is_initialized", False)
+        )
+        health["system_monitor"] = {
+            "available": monitor_ok,
+            "detail": "running" if monitor_ok else "unavailable",
+        }
+
+        available_models = getattr(self.model_router, "available_models", {})
+        model_names = [name for name, ok in available_models.items() if ok]
+        missing_models = [name for name, ok in available_models.items() if not ok]
+        health["ollama"] = {
+            "available": bool(model_names),
+            "available_models": model_names,
+            "missing_models": missing_models,
+            "detail": (
+                "models available" if model_names else "no configured models available"
+            ),
+        }
+
+        registered_agents = len(self.swarm_manager.agents)
+        expected_agents = len(AgentType)
+        health["agent_registration"] = {
+            "available": registered_agents == expected_agents,
+            "registered_count": registered_agents,
+            "expected_count": expected_agents,
+            "detail": (
+                "all agents registered"
+                if registered_agents == expected_agents
+                else "partial agent registration"
+            ),
+        }
+
+        return health
+
+    def _evaluate_core_status(self, agent_errors: Optional[List[str]] = None) -> None:
+        """Evaluate the core runtime status after initialization."""
+        health = self._collect_core_health()
+        self.core_component_health = health
+
+        reasons: List[str] = []
+        if agent_errors:
+            reasons.extend(agent_errors)
+
+        if not health["sqlite_memory"]["available"]:
+            self.core_status = CoreStatus.UNAVAILABLE
+            reasons.append("SQLite memory unavailable")
+        else:
+            if not health["system_monitor"]["available"]:
+                reasons.append("System Monitor unavailable")
+            if not health["vector_memory"]["available"]:
+                reasons.append("Vector memory unavailable")
+            if not health["ollama"]["available"]:
+                reasons.append("Ollama models unavailable")
+            if not health["agent_registration"]["available"]:
+                reasons.append("Agent registration incomplete")
+
+            self.core_status = CoreStatus.DEGRADED if reasons else CoreStatus.READY
+
+        self.core_status_reasons = reasons
 
     async def shutdown(self):
         """Shutdown all components gracefully"""
@@ -193,6 +297,8 @@ class JARVIS_Brain:
                 )
 
             self.is_initialized = False
+            self.core_status = CoreStatus.UNAVAILABLE
+            self.core_status_reasons = ["shutdown"]
             self.logger.info(
                 "JARVIS Brain shutdown complete"
             )

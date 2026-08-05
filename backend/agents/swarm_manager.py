@@ -133,6 +133,31 @@ class SwarmManager:
             del self.agent_instances[agent_type.value]
             self.logger.info(f"Unregistered agent: {agent_type.value}")
 
+    async def get_agent_overview(self) -> Dict[str, Any]:
+        """Get capability and health information for registered agents."""
+        agents: List[Dict[str, Any]] = []
+        for agent_type, agent in self.agents.items():
+            initialized = bool(getattr(agent, "is_initialized", False))
+            capabilities = getattr(agent, "capabilities", None)
+            specializations = getattr(agent, "specializations", None)
+            agents.append({
+                "agent_id": getattr(agent, "agent_id", agent_type.value),
+                "name": getattr(agent, "agent_name", agent_type.value),
+                "agent_type": getattr(agent, "agent_type", "specialist"),
+                "initialized": initialized,
+                "capabilities": capabilities,
+                "specializations": specializations,
+                "status": "ready" if initialized else "standby",
+            })
+
+        active = sum(1 for a in agents if a["initialized"])
+        return {
+            "agents": agents,
+            "active": active,
+            "registered_count": len(agents),
+            "timestamp": datetime.now().isoformat(),
+        }
+
     async def submit_task(
         self,
         description: str,

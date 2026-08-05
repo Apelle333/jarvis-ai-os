@@ -487,19 +487,26 @@ class SystemIntelligence:
 
         for agent_type, agent in swarm.agents.items():
             initialized = bool(getattr(agent, "is_initialized", False))
+            capabilities = getattr(agent, "capabilities", None)
+            specializations = getattr(agent, "specializations", None)
             entry = {
                 "agent_id": getattr(agent, "agent_id", str(agent_type)),
                 "name": getattr(agent, "agent_name", str(agent_type)),
                 "agent_type": getattr(agent, "agent_type", "specialist"),
                 "status": ONLINE,
                 "initialized": initialized,
+                "capabilities": capabilities,
+                "specializations": specializations,
                 "detail": "registered and initialized" if initialized else "registered, ready on first use",
             }
             try:
                 if hasattr(agent, "get_status"):
                     status_info = await agent.get_status()
                     if isinstance(status_info, dict):
-                        entry["specializations"] = status_info.get("specializations", [])
+                        if "specializations" in status_info:
+                            entry["specializations"] = status_info.get("specializations", [])
+                        if "capabilities" in status_info:
+                            entry["capabilities"] = status_info.get("capabilities", [])
             except Exception as e:
                 entry["status"] = ERROR
                 entry["detail"] = str(e)[:80]
@@ -509,6 +516,26 @@ class SystemIntelligence:
         return {
             "agents": agents,
             "active": active,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    # ------------------------------------------------------------------
+    # Core health and runtime status
+    # ------------------------------------------------------------------
+
+    async def get_core_status(self) -> Dict[str, Any]:
+        """Get the runtime core status and degraded reasons."""
+        if self.brain is None:
+            return {
+                "state": "unavailable",
+                "reasons": ["brain instance missing"],
+                "components": {},
+            }
+
+        return {
+            "state": self.brain.core_status.value,
+            "reasons": self.brain.core_status_reasons,
+            "components": self.brain.core_component_health,
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -589,6 +616,7 @@ class SystemIntelligence:
         status["hardware"] = await self.get_hardware_info()
         status["agents"] = await self.get_agent_status()
         status["memory"] = await self.get_memory_status()
+        status["core"] = await self.get_core_status()
         status["timestamp"] = datetime.now().isoformat()
 
         return status
