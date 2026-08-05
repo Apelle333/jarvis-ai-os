@@ -52,18 +52,32 @@ class SystemMonitor:
     async def start(self):
         """Start monitoring in background"""
         if self.is_monitoring:
+            self.logger.info("System Monitor already running")
             return
 
+        if not self.is_initialized:
+            await self.initialize()
+
         self.is_monitoring = True
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self.monitor_thread.start()
-        self.logger.info("System Monitor started")
+        try:
+            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+            self.monitor_thread.start()
+            self.logger.info("System Monitor started")
+        except Exception as e:
+            self.is_monitoring = False
+            self.logger.error(f"Failed to start System Monitor thread: {e}")
+            raise
 
     async def stop(self):
         """Stop monitoring"""
+        if not self.is_monitoring:
+            self.logger.info("System Monitor already stopped")
+            return
+
         self.is_monitoring = False
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=5)
+        self.monitor_thread = None
         self.logger.info("System Monitor stopped")
 
     def _monitor_loop(self):

@@ -56,6 +56,9 @@ class JARVIS_Brain:
         self.system_intelligence = SystemIntelligence(brain=self)
         self.system_agent: Optional[SystemAgent] = None
 
+        self.is_initialized = False
+        self.is_shutting_down = False
+
         self.logger = logging.getLogger(__name__)
 
         self.start_time = datetime.now()
@@ -67,6 +70,10 @@ class JARVIS_Brain:
 
     async def initialize(self):
         """Initialize all components"""
+        if self.is_initialized:
+            self.logger.info("JARVIS Brain already initialized")
+            return
+
         try:
             self.logger.info("Initializing JARVIS components...")
 
@@ -74,7 +81,14 @@ class JARVIS_Brain:
             await self.memory_manager.initialize()
 
             # Initialize system monitor
-            await self.system_monitor.start()
+            try:
+                await self.system_monitor.initialize()
+                await self.system_monitor.start()
+            except Exception as monitor_error:
+                self.logger.warning(
+                    "System Monitor failed to start (continuing without it): %s",
+                    monitor_error,
+                )
 
             # Check Ollama models (degrade gracefully if Ollama is unavailable)
             try:
@@ -110,6 +124,7 @@ class JARVIS_Brain:
             # Register specialist agents with the swarm
             await self._register_agents()
 
+            self.is_initialized = True
             self.logger.info(
                 "JARVIS Brain initialized successfully"
             )
@@ -145,13 +160,39 @@ class JARVIS_Brain:
 
     async def shutdown(self):
         """Shutdown all components gracefully"""
+        if self.is_shutting_down:
+            self.logger.info("JARVIS Brain shutdown already in progress")
+            return
+
+        self.is_shutting_down = True
         try:
             self.logger.info("Shutting down JARVIS components...")
 
-            await self.system_monitor.stop()
-            await self.memory_manager.shutdown()
-            await self.model_router.cleanup()
+            try:
+                await self.system_monitor.stop()
+            except Exception as monitor_error:
+                self.logger.warning(
+                    "System Monitor shutdown failed: %s",
+                    monitor_error,
+                )
 
+            try:
+                await self.memory_manager.shutdown()
+            except Exception as memory_error:
+                self.logger.warning(
+                    "Memory Manager shutdown failed: %s",
+                    memory_error,
+                )
+
+            try:
+                await self.model_router.cleanup()
+            except Exception as router_error:
+                self.logger.warning(
+                    "Model Router cleanup failed: %s",
+                    router_error,
+                )
+
+            self.is_initialized = False
             self.logger.info(
                 "JARVIS Brain shutdown complete"
             )
@@ -160,6 +201,8 @@ class JARVIS_Brain:
             self.logger.error(
                 f"Error during shutdown: {e}"
             )
+        finally:
+            self.is_shutting_down = False
 
 
     async def process_input(

@@ -44,13 +44,24 @@ class MemoryManager:
 
     async def initialize(self):
         """Initialize the memory systems"""
+        if self.is_initialized:
+            self.logger.info("Memory Manager already initialized")
+            return
+
         try:
             self.logger.info("Initializing Memory Manager...")
             self.sqlite_memory = SQLiteMemory()
             self.vector_memory = VectorMemory()
 
             await self.sqlite_memory.initialize()
-            await self.vector_memory.initialize()
+
+            try:
+                await self.vector_memory.initialize()
+            except Exception as vector_error:
+                self.logger.warning(
+                    "Vector memory failed to initialize (continuing with SQLite only): %s",
+                    vector_error,
+                )
 
             self.is_initialized = True
             self.logger.info("Memory Manager initialized successfully")
