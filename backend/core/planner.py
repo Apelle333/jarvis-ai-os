@@ -202,6 +202,14 @@ class Planner:
             return TaskType.SYSTEM_ANALYSIS
 
         if self._matches_keywords(text, [
+            "debug",
+            "error",
+            "bug",
+            "fix"
+        ]):
+            return TaskType.DEBUGGING
+
+        if self._matches_keywords(text, [
             "code",
             "program",
             "script",
@@ -209,14 +217,6 @@ class Planner:
             "class"
         ]):
             return TaskType.CODE_GENERATION
-
-        if self._matches_keywords(text, [
-            "debug",
-            "error",
-            "bug",
-            "fix"
-        ]):
-            return TaskType.DEBUGGING
 
         if self._matches_keywords(text, [
             "search",
@@ -299,7 +299,6 @@ class Planner:
             return ComplexityLevel.EXPERT
 
         if words > 20 or self._matches_keywords(text, [
-            "application",
             "website",
             "api",
             "database",

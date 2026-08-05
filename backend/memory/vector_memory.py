@@ -64,6 +64,25 @@ class VectorMemory:
             os.makedirs(self.db_path, exist_ok=True)
 
             # Initialize ChromaDB client
+            # Minimal suppression for telemetry mismatches: if the installed
+            # PostHog/ChromaDB telemetry implementation is incompatible it can
+            # emit harmless errors. Disable posthog capture here to avoid
+            # noisy telemetry exceptions while leaving ChromaDB functionality.
+            try:
+                # Try to disable posthog telemetry if available
+                import chromadb.telemetry.product.posthog as chpost
+                try:
+                    chpost.posthog.disabled = True
+                except Exception:
+                    pass
+                try:
+                    chpost.posthog.capture = lambda *a, **k: None
+                except Exception:
+                    pass
+            except Exception:
+                # telemetry internals missing or different version — ignore
+                pass
+
             self.client = chromadb.PersistentClient(
                 path=self.db_path,
                 settings=Settings(

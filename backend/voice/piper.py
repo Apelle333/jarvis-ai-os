@@ -118,7 +118,7 @@ class PiperTTS:
                     config_file = os.path.join(self.voices_dir, f"{voice_name}.onnx.json")
                     if os.path.exists(config_file):
                         try:
-                            with open(config_file, 'r') as f:
+                            with open(config_file, 'r', encoding='utf-8') as f:
                                 config = json.load(f)
                             self.available_voices[voice_name] = {
                                 "name": voice_name,

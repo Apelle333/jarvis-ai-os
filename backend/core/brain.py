@@ -84,17 +84,20 @@ class JARVIS_Brain:
                     self.settings.reasoning_model
                 ]
 
+                missing_models = []
                 for model in models:
-                    if not await self.model_router.is_model_available(model):
-                        self.logger.warning(
-                            f"Model {model} not available. Pulling..."
-                        )
-                        try:
-                            await self.model_router.pull_model(model)
-                        except Exception as pull_error:
-                            self.logger.error(
-                                f"Failed to pull model {model}: {pull_error}"
-                            )
+                    available = await self.model_router.is_model_available(model)
+                    if not available:
+                        missing_models.append(model)
+
+                if missing_models:
+                    # Log missing models but do NOT auto-pull them. Pulling
+                    # multi-GB models during startup can block and consume
+                    # resources; preserve manual model management instead.
+                    self.logger.warning(
+                        "Ollama models missing: %s. Not auto-pulling during startup.",
+                        ", ".join(missing_models),
+                    )
             except Exception as model_error:
                 self.logger.error(
                     "Ollama model verification failed "
