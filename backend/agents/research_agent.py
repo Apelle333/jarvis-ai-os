@@ -36,6 +36,7 @@ class ResearchAgent:
         self.model_router = ModelRouter()
         self.browser_tool = BrowserTool()
         self.is_initialized = False
+        self.last_error: Optional[str] = None
 
         # Agent metadata
         self.agent_id = "research_agent"
@@ -190,6 +191,7 @@ class ResearchAgent:
             }
 
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error in Research Agent processing: {e}", exc_info=True)
             error_response = await self.personality.handle_error(str(e))
             return {
@@ -489,6 +491,8 @@ class ResearchAgent:
             "agent_name": self.agent_name,
             "agent_type": self.agent_type,
             "is_initialized": self.is_initialized,
+            "health_state": "healthy" if self.is_initialized and not self.last_error else ("degraded" if self.last_error else "standby"),
+            "last_error": self.last_error,
             "specializations": self.specializations,
             "research_domains": self.research_domains,
             "last_activity": datetime.now().isoformat()

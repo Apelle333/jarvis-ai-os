@@ -35,6 +35,7 @@ class CodingAgent:
         self.memory_manager = MemoryManager()
         self.model_router = ModelRouter()
         self.is_initialized = False
+        self.last_error: Optional[str] = None
 
         # Agent metadata
         self.agent_id = "coding_agent"
@@ -171,6 +172,7 @@ class CodingAgent:
             }
 
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error in Coding Agent processing: {e}", exc_info=True)
             error_response = await self.personality.handle_error(str(e))
             return {
@@ -388,6 +390,8 @@ Format your response clearly and professionally.
             "agent_name": self.agent_name,
             "agent_type": self.agent_type,
             "is_initialized": self.is_initialized,
+            "health_state": "healthy" if self.is_initialized and not self.last_error else ("degraded" if self.last_error else "standby"),
+            "last_error": self.last_error,
             "specializations": self.specializations,
             "supported_languages": self.supported_languages,
             "last_activity": datetime.now().isoformat()

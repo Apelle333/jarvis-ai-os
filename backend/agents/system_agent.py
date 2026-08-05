@@ -87,6 +87,7 @@ class SystemAgent:
         self.browser_tool = BrowserTool()
         self.system_intelligence = None
         self.is_initialized = False
+        self.last_error: Optional[str] = None
 
         # Computer control state
         self.pending_action: Optional[Dict[str, Any]] = None
@@ -195,6 +196,7 @@ class SystemAgent:
 
             return await self._process_generic(request, context)
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error in System Agent processing: {e}", exc_info=True)
             error_response = await self.personality.handle_error(str(e))
             return {
@@ -1178,6 +1180,8 @@ class SystemAgent:
             "agent_name": self.agent_name,
             "agent_type": self.agent_type,
             "is_initialized": self.is_initialized,
+            "health_state": "healthy" if self.is_initialized and not self.last_error else ("degraded" if self.last_error else "standby"),
+            "last_error": self.last_error,
             "specializations": self.specializations,
             "supported_operations": self.supported_operations,
             "computer_control": {

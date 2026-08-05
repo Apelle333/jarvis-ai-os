@@ -31,6 +31,7 @@ class MainAgent:
         self.personality = Personality()
         self.memory_manager = MemoryManager()
         self.is_initialized = False
+        self.last_error: Optional[str] = None
 
         # Agent metadata
         self.agent_id = "main_agent"
@@ -99,6 +100,7 @@ class MainAgent:
             }
 
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error in Main Agent processing: {e}", exc_info=True)
             error_response = await self.personality.handle_error(str(e))
             return {
@@ -121,6 +123,8 @@ class MainAgent:
             "agent_type": self.agent_type,
             "is_initialized": self.is_initialized,
             "capabilities": self.capabilities,
+            "health_state": "healthy" if self.is_initialized and not self.last_error else ("degraded" if self.last_error else "standby"),
+            "last_error": self.last_error,
             "last_activity": datetime.now().isoformat()
         }
 

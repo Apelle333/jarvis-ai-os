@@ -34,6 +34,7 @@ class SecurityAgent:
         self.memory_manager = MemoryManager()
         self.model_router = ModelRouter()
         self.is_initialized = False
+        self.last_error: Optional[str] = None
 
         # Agent metadata
         self.agent_id = "security_agent"
@@ -163,6 +164,7 @@ class SecurityAgent:
             }
 
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error in Security Agent processing: {e}", exc_info=True)
             error_response = await self.personality.handle_error(str(e))
             return {
@@ -502,6 +504,8 @@ class SecurityAgent:
             "agent_name": self.agent_name,
             "agent_type": self.agent_type,
             "is_initialized": self.is_initialized,
+            "health_state": "healthy" if self.is_initialized and not self.last_error else ("degraded" if self.last_error else "standby"),
+            "last_error": self.last_error,
             "specializations": self.specializations,
             "security_frameworks": self.security_frameworks,
             "last_activity": datetime.now().isoformat()
