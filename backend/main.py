@@ -11,12 +11,14 @@ import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.brain import JARVIS_Brain, CoreStatus
+from core.settings import settings
 from api.websocket import router as websocket_router, system_snapshot_broadcast_loop
 from api.chat import router as chat_router
 from api.voice import router as voice_router
@@ -71,6 +73,21 @@ async def lifespan(app: FastAPI):
     logger.info("JARVIS AI Operating System stopped")
 
 
+class APISecurityMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not settings.enable_api_security or not settings.api_security_token:
+            return await call_next(request)
+
+        path = request.url.path
+        if path.startswith("/api") or path.startswith("/health"):
+            auth_header = request.headers.get("authorization", "")
+            expected_token = f"Bearer {settings.api_security_token}"
+            if auth_header != expected_token:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+        return await call_next(request)
+
+
 # Create FastAPI app
 app = FastAPI(
     title="JARVIS AI Operating System",
@@ -78,6 +95,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+if settings.enable_api_security:
+    if not settings.api_security_token:
+        raise RuntimeError("API security is enabled but api_security_token is not configured")
+    app.add_middleware(APISecurityMiddleware)
 
 # Include API routers
 app.include_router(chat_router, prefix="/api/chat", tags=["chat"])
@@ -95,8 +117,8 @@ app.add_middleware(
         "tauri://localhost"
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Health check endpoint

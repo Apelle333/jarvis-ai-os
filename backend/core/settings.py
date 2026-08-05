@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     enable_confirmation_prompts: bool = Field(default=True, description="Enable confirmation prompts for dangerous operations")
     allowed_commands: str = Field(default="ls,dir,cat,type,echo,mkdir,rmdir,copy,xcopy,del,erase,ren,rename", description="Comma-separated list of allowed commands")
     blocked_commands: str = Field(default="format,del *,erase *,rmdir /s,rd /s,shutdown,restart,del /f,erase /f", description="Comma-separated list of blocked commands")
+    enable_api_security: bool = Field(default=False, description="Enable API token security for backend routes")
+    api_security_token: Optional[str] = Field(default=None, description="Bearer token required for protected backend routes")
 
     # Computer Control Settings
     computer_control_enabled: bool = Field(default=True, description="Enable computer control (app/window/input/file actions)")

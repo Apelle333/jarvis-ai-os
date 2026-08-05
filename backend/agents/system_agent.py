@@ -24,7 +24,10 @@ import platform
 import psutil
 import uuid
 import time
+import re
+import shlex
 from collections import deque
+from pathlib import Path
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime
 
@@ -772,6 +775,19 @@ class SystemAgent:
             "data": {"summary": summary, "uptime": uptime},
         }
 
+    async def _do_run_command(self, intent: ControlIntent) -> Dict[str, Any]:
+        """Execute a validated or confirmed shell command."""
+        command = intent.params.get("command") or intent.target or ""
+        if not command:
+            return {"success": False, "error": "No command provided."}
+
+        cmd_result = await self.terminal_tool.execute_command(command)
+        if cmd_result.get("success"):
+            cmd_result["message"] = f"Command executed successfully:\n\n{cmd_result.get('stdout', '')}"
+        else:
+            cmd_result["message"] = f"Command failed: {cmd_result.get('error', 'Unknown error')}"
+        return cmd_result
+
     # ------------------------------------------------------------------
     # Legacy generic pipeline (non computer-control requests)
     # ------------------------------------------------------------------
@@ -1031,18 +1047,32 @@ class SystemAgent:
                 proc_info = await self.system_monitor.get_process_info()
                 result.update({"success": True, "data": proc_info, "message": self._format_process_info(proc_info)})
 
-            elif "run" in request_lower or "execute" in request_lower:
+            elif "run" in request_lower or "execute" in request_lower or "esegui" in request_lower or "lancia" in request_lower:
                 command = self._extract_command_from_request(request)
                 if command:
-                    allowed_commands = ["dir", "ls", "echo", "ping", "ipconfig", "ifconfig", "netstat", "tasklist", "ps"]
-                    if any(cmd in command.lower() for cmd in allowed_commands):
+                    if self._is_command_text_dangerous(request_lower) or self._is_command_text_dangerous(command.lower()):
+                        intent = ControlIntent(
+                            action="run_command",
+                            category="system",
+                            target=command,
+                            params={"command": command, "original_request": request},
+                            risk=HIGH,
+                            requires_confirmation=True,
+                            description=f"execute the requested command '{command}'"
+                        )
+                        return await self._request_confirmation(request, intent)
+
+                    base_command = self._get_command_base(command)
+                    if base_command and base_command in self.terminal_tool.allowed_commands:
                         cmd_result = await self.terminal_tool.execute_command(command)
                         result.update(cmd_result)
-                        if cmd_result["success"]:
+                        self._audit_event("command_executed", command, cmd_result.get("success", False))
+                        if cmd_result.get("success"):
                             result["message"] = f"Command executed successfully:\n\n{cmd_result.get('stdout', '')}"
                         else:
                             result["message"] = f"Command failed: {cmd_result.get('error', 'Unknown error')}"
                     else:
+                        self.logger.warning(f"[AUDIT] system_command_blocked: {command}")
                         result["message"] = f"Command '{command}' is not allowed for security reasons."
                 else:
                     result["message"] = "Please specify what command you'd like to run."
@@ -1158,9 +1188,76 @@ class SystemAgent:
         except Exception as e:
             self.logger.warning(f"Failed to broadcast action event: {e}")
 
+    def _audit_event(self, event: str, detail: str, success: bool = True) -> None:
+        """Log audit events for security-sensitive operations."""
+        level = logging.INFO if success else logging.WARNING
+        self.logger.log(level, f"[AUDIT] system_{event}: {detail}")
+
+    def _is_command_text_dangerous(self, text: str) -> bool:
+        """Detect potentially destructive natural language in command requests."""
+        dangerous_terms = [
+            'delete', 'remove', 'erase', 'destroy', 'format', 'shutdown', 'restart', 'reboot',
+            'poweroff', 'kill', 'taskkill', 'rmdir', 'rm -rf', 'chmod 777', 'chown', 'net user',
+            'net localgroup', 'sc delete', 'sc stop', 'sc config', 'reg add', 'reg delete', 'regedit'
+        ]
+        return any(term in text for term in dangerous_terms)
+
+    def _get_command_base(self, command: str) -> str:
+        """Return the base command token for a shell command."""
+        try:
+            parts = shlex.split(command, posix=False)
+        except ValueError:
+            return ""
+        return parts[0].lower() if parts else ""
+
+    def _extract_command_from_request(self, request: str) -> str:
+        """Extract an explicit command string from a natural language request."""
+        text = request.strip()
+        if not text:
+            return ""
+
+        # Heuristic extraction by removing common wrappers
+        prefixes = [
+            r"^run\s+", r"^execute\s+", r"^esegui\s+", r"^lancia\s+", r"^avvia\s+",
+            r"^esegui il comando\s+", r"^lancia il comando\s+", r"^apri il comando\s+",
+            r"^esegui il\s+", r"^lancia il\s+", r"^avvia il\s+"
+        ]
+        lower_text = text.lower()
+        for prefix in prefixes:
+            candidate = re.sub(prefix, '', text, flags=re.IGNORECASE).strip()
+            if candidate and candidate != text:
+                return candidate
+
+        # Extract quoted command if present
+        quote_match = re.search(r'"([^"]+)"|\'([^\']+)\'', text)
+        if quote_match:
+            return quote_match.group(1) or quote_match.group(2)
+
+        # Split on keywords and return the trailing text
+        split_keywords = ["run", "execute", "esegui", "lancia", "avvia", "per favore", "please"]
+        for keyword in split_keywords:
+            if keyword in lower_text:
+                parts = re.split(rf"\b{re.escape(keyword)}\b", text, flags=re.IGNORECASE)
+                if len(parts) > 1:
+                    candidate = parts[-1].strip(' "\'')
+                    if candidate:
+                        return candidate
+
+        return text
+
     def _safe_folder_path(self, name: str) -> str:
         """Keep user-created folders inside the sandboxed workspace/current dir."""
-        return name
+        if not name:
+            return ""
+
+        normalized = name.strip().strip('"\'')
+        candidate = Path(normalized)
+        if candidate.is_absolute():
+            candidate = Path(*candidate.parts[1:])
+
+        cleaned_parts = [part for part in candidate.parts if part not in ('.', '..', '/', '\\')]
+        safe_path = Path(*cleaned_parts)
+        return str(safe_path)
 
     def _is_italian(self, text: str) -> bool:
         lower = text.lower()

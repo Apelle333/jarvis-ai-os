@@ -570,18 +570,44 @@ class AutomationTool:
         if not self.is_initialized:
             await self.initialize()
 
-        # Basic security check - in production would be more robust
-        dangerous_commands = ['format', 'del', 'rm', 'shutdown', 'restart', 'mkfs']
+        if not command or not command.strip():
+            return {"success": False, "error": "No command provided."}
+
         cmd_lower = command.lower().strip()
-        for dangerous in dangerous_commands:
-            if dangerous in cmd_lower:
+        dangerous_patterns = [
+            'format', 'del ', 'rm ', 'destroy', 'delete', 'remove',
+            'shutdown', 'restart', 'reboot', 'halt', 'poweroff',
+            'net user', 'net localgroup', 'add user', 'del user',
+            'reg add', 'reg delete', 'sc create', 'sc delete',
+            'cipher', 'chkdsk', 'diskpart', 'mkfs', 'fdisk', 'mount', 'umount'
+        ]
+        unsafe_operators = ['&&', '||', ';', '|', '>', '<', '$(', '`']
+
+        for pattern in dangerous_patterns:
+            if pattern in cmd_lower:
+                self.logger.warning(f"[AUDIT] automation_command_blocked: {command} | pattern={pattern}")
                 return {
                     "success": False,
-                    "error": f"Command contains potentially dangerous operation: {dangerous}"
+                    "error": f"Command contains potentially dangerous operation: {pattern}"
                 }
+
+        if any(op in cmd_lower for op in unsafe_operators):
+            self.logger.warning(f"[AUDIT] automation_command_blocked: {command} | unsafe shell operator detected")
+            return {
+                "success": False,
+                "error": "Command contains unsafe shell operators"
+            }
+
+        if len(command) > 500:
+            self.logger.warning(f"[AUDIT] automation_command_blocked: command too long")
+            return {
+                "success": False,
+                "error": "Command exceeds maximum allowed length"
+            }
 
         try:
             self.logger.info(f"Executing command: {command}")
+            self.logger.info(f"[AUDIT] automation_command_allowed: {command}")
             process = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,

@@ -7,9 +7,12 @@ import asyncio
 import logging
 import subprocess
 import shlex
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 import psutil
 import os
+
+from core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +100,6 @@ class TerminalTool:
         if not command or not command.strip():
             return False
 
-        # Normalize command
         cmd_lower = command.strip().lower()
 
         # Check for blocked patterns
@@ -105,14 +107,19 @@ class TerminalTool:
             if blocked in cmd_lower:
                 return False
 
+        if any(op in cmd_lower for op in ['&&', '||', ';', '|', '>', '<', '$(', '`']):
+            return False
+
         # Extract the base command (first word)
-        parts = shlex.split(cmd_lower)
+        try:
+            parts = shlex.split(command, posix=False)
+        except ValueError:
+            return False
+
         if not parts:
             return False
 
-        base_command = parts[0]
-
-        # Check if it's in allowed list
+        base_command = parts[0].lower()
         return base_command in self.allowed_commands
 
     def _sanitize_command(self, command: str) -> str:
@@ -120,16 +127,44 @@ class TerminalTool:
         if not command:
             return ""
 
-        # Remove dangerous characters and patterns
-        dangerous = ['&', '|', ';', '$', '`', '>', '<', '\\', '(', ')', '{', '}']
+        # Remove dangerous shell operators and characters
+        dangerous = ['&', '|', ';', '$', '`', '>', '<', '(', ')', '{', '}']
         for char in dangerous:
             command = command.replace(char, '')
+
+        # Collapse repeated whitespace
+        command = ' '.join(command.split())
 
         # Limit length
         if len(command) > 500:
             command = command[:500]
 
         return command.strip()
+
+    def _is_path_safe(self, path: str) -> bool:
+        """Ensure the working directory remains inside the configured workspace root."""
+        if not path:
+            return False
+        try:
+            target_path = Path(path).resolve()
+            base_path = Path(settings.workspace_root).resolve()
+            try:
+                target_path.relative_to(base_path)
+                return True
+            except ValueError:
+                return False
+        except Exception:
+            return False
+
+    def _audit_event(self, event: str, detail: str, success: bool = True, extra: str = "") -> None:
+        """Log security-related and audit-relevant terminal events."""
+        message = f"[AUDIT] {event}: {detail}"
+        if extra:
+            message += f" | {extra}"
+        if success:
+            self.logger.info(message)
+        else:
+            self.logger.warning(message)
 
     async def execute_command(
         self,
@@ -145,6 +180,7 @@ class TerminalTool:
 
             # Security check
             if not self._is_command_allowed(command):
+                self._audit_event("command_blocked", command, False, "Disallowed command or blocked pattern")
                 return {
                     "success": False,
                     "error": f"Command '{command}' is not allowed for security reasons",
@@ -154,20 +190,22 @@ class TerminalTool:
             # Sanitize input
             sanitized_command = self._sanitize_command(command)
             if not sanitized_command:
+                self._audit_event("command_blocked", command, False, "Invalid command after sanitization")
                 return {
                     "success": False,
                     "error": "Invalid command after sanitization",
                     "command": command
                 }
 
-            self.logger.info(f"Executing command: {sanitized_command}")
+            self._audit_event("command_allowed", sanitized_command, True)
 
-            # Set working directory
+            # Set working directory to the configured workspace root by default.
             if cwd is None:
-                cwd = os.getcwd()
+                cwd = str(Path(settings.workspace_root).resolve())
             else:
                 # Ensure cwd is safe
                 if not self._is_path_safe(cwd):
+                    self._audit_event("command_blocked", command, False, f"Unsafe working directory: {cwd}")
                     return {
                         "success": False,
                         "error": f"Working directory '{cwd}' is not allowed for security reasons",
@@ -251,11 +289,20 @@ class TerminalTool:
             script_lower = script_content.lower()
             for pattern in dangerous_patterns:
                 if pattern in script_lower:
+                    self._audit_event("script_blocked", pattern, False, f"Dangerous pattern detected in script")
                     return {
                         "success": False,
                         "error": f"Script contains potentially dangerous content: '{pattern}'",
                         "script_type": script_type
                     }
+
+            if any(op in script_lower for op in ['&&', '||', ';', '|', '>', '<', '$(', '`']):
+                self._audit_event("script_blocked", script_content, False, "Unsafe shell operators detected")
+                return {
+                    "success": False,
+                    "error": "Script contains unsafe shell operators",
+                    "script_type": script_type
+                }
 
             # Determine interpreter based on script type
             if script_type.lower() in ['batch', 'bat']:

@@ -12,6 +12,7 @@ from datetime import datetime
 
 from agents.main_agent import MainAgent
 from api.dependencies import get_brain, get_main_agent
+from core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,14 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, agent: MainAg
     """
     WebSocket endpoint for real-time communication
     """
+    if settings.enable_api_security and settings.api_security_token:
+        auth_header = websocket.headers.get("authorization", "")
+        expected_token = f"Bearer {settings.api_security_token}"
+        if auth_header != expected_token:
+            logger.warning(f"WebSocket connection rejected for client {client_id} due to invalid token")
+            await websocket.close(code=1008)
+            return
+
     await manager.connect(websocket, client_id)
 
     try:

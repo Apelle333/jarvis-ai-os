@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import aiofiles
 
+from core.settings import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +25,7 @@ class FileSystemTool:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.is_initialized = False
-        self.base_path = Path(".").resolve()  # Default to current directory
+        self.base_path = Path(settings.workspace_root).resolve()
         self.allowed_extensions = {
             '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.ts',
             '.py', '.java', '.cpp', '.c', '.h', '.cs', '.go', '.rs', '.php',
@@ -57,27 +59,34 @@ class FileSystemTool:
             self.logger.error(f"Failed to initialize File System Tool: {e}")
             raise
 
+    def _audit_event(self, event: str, detail: str, success: bool = True) -> None:
+        """Log security-related filesystem events."""
+        level = logging.INFO if success else logging.WARNING
+        logger.log(level, f"[AUDIT] filesystem_{event}: {detail}")
+
     def _is_path_safe(self, path: str) -> bool:
         """Check if a path is safe to access"""
         try:
-            # Convert to Path object and resolve
-            target_path = Path(path).resolve()
+            # Resolve relative paths against the configured workspace root.
+            target_path = (self.base_path / path).resolve() if not Path(path).is_absolute() else Path(path).resolve()
 
             # Check if path is within base directory
             try:
                 target_path.relative_to(self.base_path)
             except ValueError:
-                # Path is outside base directory
+                self._audit_event("blocked_path", f"Path outside workspace: {path}", False)
                 return False
 
             # Check against blocked paths
             path_str = str(target_path).lower()
             for blocked in self.blocked_paths:
                 if blocked.lower() in path_str:
+                    self._audit_event("blocked_path", f"Blocked path pattern matched: {path}", False)
                     return False
 
             return True
         except Exception:
+            self._audit_event("blocked_path", f"Path validation failed: {path}", False)
             return False
 
     def _is_extension_allowed(self, filename: str) -> bool:
