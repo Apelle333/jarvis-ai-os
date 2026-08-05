@@ -9,6 +9,7 @@ this module must be the only place that defines ``ModelRouter`` and
 """
 import asyncio
 import logging
+from datetime import datetime
 import ollama
 
 from dataclasses import dataclass, field
@@ -46,6 +47,13 @@ class ModelRouter:
         self.logger = logging.getLogger(__name__)
         self.available_models: Dict[str, bool] = {}
         self.model_capabilities: Dict[str, List[TaskType]] = {}
+        self.runtime_metrics: Dict[str, Any] = {
+            "availability_check_ms": 0.0,
+            "selection_ms": 0.0,
+            "generation_ms": 0.0,
+            "generation_errors": 0,
+            "selection_count": 0,
+        }
 
         self._initialize_model_capabilities()
 
@@ -112,6 +120,7 @@ class ModelRouter:
 
     async def _check_available_models(self):
         """Check which configured models are available in Ollama."""
+        availability_start = datetime.now()
         try:
             models_info = ollama.list()
             available_model_names = [
@@ -137,12 +146,17 @@ class ModelRouter:
             # Fallback to assuming models are available so routing can proceed.
             for model_name in self.model_capabilities.keys():
                 self.available_models[model_name] = True
+        finally:
+            self.runtime_metrics["availability_check_ms"] = (
+                datetime.now() - availability_start
+            ).total_seconds() * 1000.0
 
     async def is_model_available(self, model_name: str) -> bool:
         """Check if a specific model is available (cached, then live)."""
         if model_name in self.available_models:
             return self.available_models[model_name]
 
+        availability_start = datetime.now()
         try:
             models_info = ollama.list()
             available = [
@@ -153,6 +167,10 @@ class ModelRouter:
             return result
         except Exception:
             return False
+        finally:
+            self.runtime_metrics["availability_check_ms"] = (
+                datetime.now() - availability_start
+            ).total_seconds() * 1000.0
 
     @staticmethod
     def _normalize_complexity(complexity: Any) -> str:
@@ -205,9 +223,14 @@ class ModelRouter:
         if not candidate_models:
             candidate_models = [self.models["default"]]
 
+        selection_start = datetime.now()
         selected_model = await self._select_best_model(
             candidate_models, task_type, complexity, context
         )
+        self.runtime_metrics["selection_ms"] = (
+            datetime.now() - selection_start
+        ).total_seconds() * 1000.0
+        self.runtime_metrics["selection_count"] += 1
 
         temperature, max_tokens = self._get_model_parameters(
             task_type, complexity
@@ -366,18 +389,35 @@ class ModelRouter:
 
         messages.append({"role": "user", "content": prompt})
 
-        response = await asyncio.to_thread(
-            ollama.chat,
-            model=model,
-            messages=messages,
-            options={
-                "temperature": temperature,
-                "num_predict": max_tokens,
-                "top_p": 0.9,
-            },
+        generation_start = datetime.now()
+        self.runtime_metrics["generation_requests"] = (
+            self.runtime_metrics.get("generation_requests", 0) + 1
         )
-
-        return response["message"]["content"]
+        try:
+            response = await asyncio.to_thread(
+                ollama.chat,
+                model=model,
+                messages=messages,
+                options={
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                    "top_p": 0.9,
+                },
+            )
+            return response["message"]["content"]
+        except Exception as e:
+            self.runtime_metrics["generation_errors"] += 1
+            self.logger.error(
+                "Model generation failed: %s | model=%s",
+                e,
+                model,
+                exc_info=True,
+            )
+            raise
+        finally:
+            self.runtime_metrics["generation_ms"] = (
+                datetime.now() - generation_start
+            ).total_seconds() * 1000.0
 
     async def pull_model(self, model_name: str) -> bool:
         """Pull/download a model if not available.

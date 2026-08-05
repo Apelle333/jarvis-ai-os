@@ -69,6 +69,18 @@ class JARVIS_Brain:
         self.core_status_reasons: List[str] = []
         self.core_component_health: Dict[str, Any] = {}
 
+        self.startup_metrics = {
+            "initialization_time_ms": 0.0,
+            "component_timings_ms": {},
+            "startup_failures": [],
+        }
+        self.runtime_metrics = {
+            "active_requests": 0,
+            "total_requests": 0,
+            "generation_requests": 0,
+            "latest_task_queue_length": 0,
+        }
+
         self.logger = logging.getLogger(__name__)
 
         self.start_time = datetime.now()
@@ -86,21 +98,34 @@ class JARVIS_Brain:
 
         try:
             self.logger.info("Initializing JARVIS components...")
+            init_start = datetime.now()
 
             # Initialize memory
-            await self.memory_manager.initialize()
+            memory_start = datetime.now()
+            try:
+                await self.memory_manager.initialize()
+            except Exception as memory_error:
+                self._record_startup_failure("memory_manager", memory_error)
+                raise
+            finally:
+                self._record_component_timing("memory_manager", memory_start)
 
             # Initialize system monitor
+            monitor_start = datetime.now()
             try:
                 await self.system_monitor.initialize()
                 await self.system_monitor.start()
             except Exception as monitor_error:
+                self._record_startup_failure("system_monitor", monitor_error)
                 self.logger.warning(
                     "System Monitor failed to start (continuing without it): %s",
                     monitor_error,
                 )
+            finally:
+                self._record_component_timing("system_monitor", monitor_start)
 
             # Check Ollama models (degrade gracefully if Ollama is unavailable)
+            model_availability_start = datetime.now()
             try:
                 models = [
                     self.settings.default_model,
@@ -123,29 +148,47 @@ class JARVIS_Brain:
                         ", ".join(missing_models),
                     )
             except Exception as model_error:
+                self._record_startup_failure("ollama_availability_check", model_error)
                 self.logger.error(
                     "Ollama model verification failed "
                     f"(continuing without it): {model_error}"
                 )
+            finally:
+                self._record_component_timing("ollama_availability_check", model_availability_start)
 
             # Initialize personality
-            await self.personality.initialize()
+            personality_start = datetime.now()
+            try:
+                await self.personality.initialize()
+            except Exception as personality_error:
+                self._record_startup_failure("personality", personality_error)
+                raise
+            finally:
+                self._record_component_timing("personality", personality_start)
 
             # Register specialist agents with the swarm
             agent_errors: List[str] = []
+            agents_start = datetime.now()
             try:
                 await self._register_agents()
             except Exception as agent_error:
                 agent_errors.append(str(agent_error))
+                self._record_startup_failure("agent_registration", agent_error)
                 self.logger.warning(
                     "Agent registration incomplete (continuing in degraded mode): %s",
                     agent_error,
                 )
+            finally:
+                self._record_component_timing("agent_registration", agents_start)
 
             self.is_initialized = True
             self._evaluate_core_status(agent_errors=agent_errors)
+            self.startup_metrics["initialization_time_ms"] = (
+                datetime.now() - init_start
+            ).total_seconds() * 1000.0
             self.logger.info(
-                "JARVIS Brain initialized successfully"
+                "JARVIS Brain initialized successfully | metrics=%s",
+                self.startup_metrics,
             )
 
         except Exception as e:
@@ -177,6 +220,17 @@ class JARVIS_Brain:
         self.logger.info(
             f"Registered {len(agent_instances)} agents with the swarm"
         )
+
+    def _record_component_timing(self, component_name: str, start_time: datetime) -> None:
+        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000.0
+        self.startup_metrics["component_timings_ms"][component_name] = elapsed_ms
+
+    def _record_startup_failure(self, component_name: str, error: Exception) -> None:
+        self.startup_metrics["startup_failures"].append({
+            "component": component_name,
+            "error": str(error),
+            "timestamp": datetime.now().isoformat(),
+        })
 
     def _collect_core_health(self) -> Dict[str, Any]:
         """Collect health information for core subcomponents."""
@@ -318,6 +372,8 @@ class JARVIS_Brain:
     ) -> str:
 
         self.request_count += 1
+        self.runtime_metrics["total_requests"] += 1
+        self.runtime_metrics["active_requests"] += 1
         self.state = SystemState.PROCESSING
 
         try:
@@ -428,6 +484,14 @@ class JARVIS_Brain:
             )
 
             return await self.personality.handle_error(str(e))
+
+        finally:
+            self.runtime_metrics["active_requests"] = max(
+                0, self.runtime_metrics["active_requests"] - 1
+            )
+            self.runtime_metrics["latest_task_queue_length"] = len(
+                self.swarm_manager.task_queue
+            )
 
 
     async def _handle_system_analysis(
@@ -619,7 +683,12 @@ class JARVIS_Brain:
             "error_count": self.error_count,
             "memory_stats": await self.memory_manager.get_stats(),
             "system_stats": await self.system_monitor.get_current_stats(),
-            "model_info": await self.model_router.get_available_models()
+            "model_info": await self.model_router.get_available_models(),
+            "core_status": self.core_status.value,
+            "core_reasons": self.core_status_reasons,
+            "component_health": self.core_component_health,
+            "startup_metrics": self.startup_metrics,
+            "runtime_metrics": self.runtime_metrics,
         }
 
 

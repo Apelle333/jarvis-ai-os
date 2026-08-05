@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
-from core.brain import JARVIS_Brain
+from core.brain import JARVIS_Brain, CoreStatus
 from api.websocket import router as websocket_router, system_snapshot_broadcast_loop
 from api.chat import router as chat_router
 from api.voice import router as voice_router
@@ -103,7 +103,21 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "JARVIS AI"}
+    if brain is None:
+        return {
+            "service": "JARVIS AI",
+            "status": "unavailable",
+            "core_status": "unavailable",
+            "reasons": ["brain not initialized"],
+        }
+
+    return {
+        "service": "JARVIS AI",
+        "status": "healthy" if brain.core_status == CoreStatus.READY else "degraded" if brain.core_status == CoreStatus.DEGRADED else "unavailable",
+        "core_status": brain.core_status.value,
+        "reasons": brain.core_status_reasons,
+        "startup_metrics": brain.startup_metrics,
+    }
 
 # Mount static files (for frontend) - registered last so it does not shadow routes
 _frontend_dir = os.path.join(BACKEND_DIR, "..", "frontend")

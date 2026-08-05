@@ -519,6 +519,55 @@ class SystemIntelligence:
             "timestamp": datetime.now().isoformat(),
         }
 
+    def _collect_capabilities(self) -> Dict[str, Any]:
+        """Collect capability summary from core components."""
+        if self.brain is None:
+            return {
+                "models": [],
+                "agents": [],
+                "memory_backends": {},
+                "voice": {},
+            }
+
+        model_router = self.brain.model_router
+        available_models = [
+            model for model, ok in getattr(model_router, "available_models", {}).items() if ok
+        ]
+        agent_capabilities = []
+        swarm = self.brain.swarm_manager
+        if swarm is not None:
+            for _, agent in getattr(swarm, "agents", {}).items():
+                agent_capabilities.append({
+                    "name": getattr(agent, "agent_name", str(type(agent).__name__)),
+                    "capabilities": getattr(agent, "capabilities", []),
+                })
+
+        memory_manager = self.brain.memory_manager
+        memory_backends = {
+            "sqlite": bool(
+                memory_manager is not None
+                and getattr(memory_manager, "sqlite_memory", None) is not None
+                and getattr(memory_manager.sqlite_memory, "is_initialized", False)
+            ),
+            "vector": bool(
+                memory_manager is not None
+                and getattr(memory_manager, "vector_memory", None) is not None
+                and getattr(memory_manager.vector_memory, "is_initialized", False)
+            ),
+        }
+
+        voice = {
+            "speech_to_text": hasattr(self.brain, "settings") and getattr(self.brain.settings, "whisper_enabled", False),
+            "text_to_speech": hasattr(self.brain, "settings") and getattr(self.brain.settings, "piper_enabled", False),
+        }
+
+        return {
+            "models": available_models,
+            "agents": agent_capabilities,
+            "memory_backends": memory_backends,
+            "voice": voice,
+        }
+
     # ------------------------------------------------------------------
     # Core health and runtime status
     # ------------------------------------------------------------------
@@ -617,6 +666,10 @@ class SystemIntelligence:
         status["agents"] = await self.get_agent_status()
         status["memory"] = await self.get_memory_status()
         status["core"] = await self.get_core_status()
+        status["startup_metrics"] = getattr(self.brain, "startup_metrics", {}) if self.brain else {}
+        status["runtime_metrics"] = getattr(self.brain, "runtime_metrics", {}) if self.brain else {}
+        status["model_metrics"] = getattr(self.brain.model_router, "runtime_metrics", {}) if self.brain and getattr(self.brain, "model_router", None) else {}
+        status["capabilities"] = self._collect_capabilities()
         status["timestamp"] = datetime.now().isoformat()
 
         return status
