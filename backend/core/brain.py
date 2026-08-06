@@ -82,30 +82,46 @@ class JARVIS_Brain:
             # Initialize system monitor
             await self.system_monitor.start()
 
-            # Check Ollama models (degrade gracefully if Ollama is unavailable)
+            # Check Ollama models availability (do NOT auto-pull models).
+            # ModelRouter.initialize will inspect available models and populate
+            # the router's availability map. If Ollama is unavailable or models
+            # are missing we log and continue in degraded mode.
             try:
-                models = [
-                    self.settings.default_model,
-                    self.settings.coder_model,
-                    self.settings.reasoning_model
-                ]
-
-                for model in models:
-                    if not await self.model_router.is_model_available(model):
-                        self.logger.warning(
-                            f"Model {model} not available. Pulling..."
-                        )
-                        try:
-                            await self.model_router.pull_model(model)
-                        except Exception as pull_error:
-                            self.logger.error(
-                                f"Failed to pull model {model}: {pull_error}"
-                            )
+                await self.model_router.initialize()
+                self.logger.info(f"Model availability: {self.model_router.available_models}")
+                # If critical models are missing, mark degraded but continue
+                missing = [m for m, ok in self.model_router.available_models.items() if not ok]
+                if missing:
+                    self.logger.warning(f"Some configured models are unavailable: {missing}. Running in degraded mode.")
             except Exception as model_error:
                 self.logger.error(
-                    "Ollama model verification failed "
-                    f"(continuing without it): {model_error}"
+                    "Model router initialization failed (continuing in degraded mode): "
+                    f"{model_error}"
                 )
+
+            # Startup diagnostics for optional components
+            try:
+                vm = getattr(self.memory_manager, 'vector_memory', None)
+                if vm is None or not getattr(vm, 'is_initialized', False):
+                    self.logger.warning("Vector memory not initialized or unavailable - long-term memory will be degraded.")
+                else:
+                    try:
+                        from memory import vector_memory as vm_mod
+                        if not getattr(vm_mod, 'CHROMADB_AVAILABLE', False):
+                            self.logger.info("ChromaDB not available; vector memory using fallback store")
+                    except Exception:
+                        # best-effort diagnostics only
+                        pass
+
+                try:
+                    import sentence_transformers  # type: ignore
+                    self.logger.info("sentence-transformers available for embeddings")
+                except Exception:
+                    self.logger.info("sentence-transformers not available - embeddings will use fallback method")
+
+            except Exception:
+                # Keep startup robust - diagnostics are helpful but non-fatal
+                self.logger.debug("Startup diagnostics encountered an issue (non-fatal)")
 
             # Initialize personality
             await self.personality.initialize()

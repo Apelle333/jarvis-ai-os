@@ -52,18 +52,37 @@ class ConnectionManager:
                 self.disconnect(client_id)
 
     async def broadcast(self, message: dict):
-        disconnected = []
-        for client_id, connection in self.active_connections.items():
+        """Broadcast a message to all active connections concurrently.
+
+        Sends are performed concurrently to avoid slow/blocked clients delaying
+        the overall broadcast. Per-client failures are logged and those
+        connections are cleaned up. This preserves the existing API while
+        improving robustness.
+        """
+        disconnected = set()
+        tasks = []
+
+        async def _send_to_client(client_id, connection):
             try:
                 await connection.send_text(json.dumps(message))
-                self.connection_info[client_id]["last_activity"] = datetime.now()
-                self.connection_info[client_id]["message_count"] += 1
+                # Update connection info safely
+                if client_id in self.connection_info:
+                    self.connection_info[client_id]["last_activity"] = datetime.now()
+                    self.connection_info[client_id]["message_count"] += 1
             except Exception as e:
                 logger.error(f"Error broadcasting to client {client_id}: {e}")
-                disconnected.append(client_id)
+                disconnected.add(client_id)
+
+        # Launch concurrent send tasks
+        for client_id, connection in list(self.active_connections.items()):
+            tasks.append(asyncio.create_task(_send_to_client(client_id, connection)))
+
+        if tasks:
+            # Wait for all sends to complete but don't let exceptions bubble
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         # Clean up disconnected clients
-        for client_id in disconnected:
+        for client_id in list(disconnected):
             self.disconnect(client_id)
 
     def get_connection_count(self) -> int:
