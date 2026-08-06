@@ -5,6 +5,7 @@ Long-term memory storage using ChromaDB for vector embeddings
 
 import asyncio
 import logging
+import os
 import numpy as np
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -48,6 +49,14 @@ class VectorMemory:
         # Embedding function - we'll use a simple fallback if sentence-transformers not available
         self.embedding_function = None
         self.embedding_model_name = "all-MiniLM-L6-v2"
+
+        # Duplicate detection threshold (0.0-1.0). If a candidate exceeds this
+        # similarity the existing item will be reused instead of creating a new one.
+        self.duplicate_threshold = 0.9
+
+        # Fallback JSON store path (used only when ChromaDB is unavailable)
+        self.fallback_store_file = os.path.join(self.db_path, "fallback_store.json")
+        self._fallback_initialized = False
 
     async def initialize(self):
         """Initialize the vector database"""
@@ -186,18 +195,8 @@ class VectorMemory:
         metadata: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Store knowledge in vector memory
-
-        Args:
-            title: Title of the knowledge
-            content: The knowledge content
-            source: Source of the knowledge
-            tags: Tags for categorization
-            timestamp: When the knowledge was acquired
-            metadata: Additional metadata
-
-        Returns:
-            Memory ID
+        Store knowledge in vector memory with duplicate detection. Uses ChromaDB when
+        available; otherwise falls back to a simple JSON store for emergency persistence.
         """
         if not self.is_initialized:
             await self.initialize()
@@ -213,10 +212,30 @@ class VectorMemory:
         full_text = f"Title: {title}\nContent: {content}"
 
         try:
-            if CHROMADB_AVAILABLE and self.collections.get("knowledge"):
+            # If ChromaDB is available, attempt duplicate detection using embeddings
+            if CHROMADB_AVAILABLE and self.collections.get("knowledge") and self.client:
                 collection = self.collections["knowledge"]
                 embedding = self._get_embedding(full_text)
 
+                # Query nearest neighbors to detect duplicates
+                try:
+                    q = collection.query(
+                        query_embeddings=[embedding],
+                        n_results=3,
+                        include=["ids", "distances", "metadatas", "documents"]
+                    )
+                    if q and q.get("ids") and q["ids"][0]:
+                        for i, cand_id in enumerate(q["ids"][0]):
+                            distance = q["distances"][0][i]
+                            similarity = 1.0 - distance
+                            if similarity >= self.duplicate_threshold:
+                                self.logger.info(f"Found duplicate knowledge (ID: {cand_id}, sim={similarity:.3f}) - reusing existing entry")
+                                return cand_id
+                except Exception as e:
+                    # If query fails, continue to add the new entry
+                    self.logger.debug(f"Duplicate check query failed: {e}")
+
+                # No duplicate found - add new entry
                 collection.add(
                     embeddings=[embedding],
                     documents=[full_text],
@@ -229,10 +248,27 @@ class VectorMemory:
                     }],
                     ids=[memory_id]
                 )
+
             else:
-                # Fallback storage - just store the data without vectors
-                # In a real implementation, we'd have a fallback database
-                pass
+                # Fallback JSON store
+                fallback = await self._fallback_load()
+                dup = await self._fallback_find_duplicate(full_text)
+                if dup:
+                    self.logger.info(f"Found duplicate in fallback store (ID: {dup['id']}) - reusing existing entry")
+                    return dup["id"]
+
+                # Add to fallback store
+                entry = {
+                    "id": memory_id,
+                    "content": full_text,
+                    "title": title,
+                    "source": source,
+                    "tags": tags,
+                    "timestamp": timestamp.isoformat(),
+                    "metadata": metadata
+                }
+                fallback.append(entry)
+                await self._fallback_save(fallback)
 
             self.logger.info(f"Stored knowledge: {title} (ID: {memory_id})")
             return memory_id
@@ -611,9 +647,36 @@ class VectorMemory:
             await self.initialize()
 
         if not CHROMADB_AVAILABLE or not self.client:
-            # Fallback: return empty results or implement basic text search
-            self.logger.warning("Vector search not available - returning empty results")
-            return []
+            # Fallback search using simple substring and fuzzy matching against JSON store
+            try:
+                from difflib import SequenceMatcher
+            except Exception:
+                SequenceMatcher = None
+
+            fallback = await self._fallback_load()
+            results = []
+            q_lower = query.lower()
+            for item in fallback:
+                content = item.get("content", "")
+                similarity = 0.0
+                if q_lower in content.lower():
+                    similarity = 0.9
+                elif SequenceMatcher:
+                    try:
+                        similarity = SequenceMatcher(None, query, content).ratio()
+                    except Exception:
+                        similarity = 0.0
+                if similarity >= min_similarity:
+                    results.append({
+                        "id": item.get("id"),
+                        "content": content,
+                        "metadata": item.get("metadata", {}),
+                        "similarity": similarity,
+                        "type": "fallback",
+                        "collection": "fallback_store"
+                    })
+            results.sort(key=lambda x: x["similarity"], reverse=True)
+            return results[:limit]
 
         results = []
 
@@ -690,6 +753,20 @@ class VectorMemory:
             await self.initialize()
 
         if not CHROMADB_AVAILABLE or not self.client:
+            # Fallback to JSON store
+            try:
+                fallback = await self._fallback_load()
+                for item in fallback:
+                    if item.get("id") == memory_id:
+                        return {
+                            "id": item.get("id"),
+                            "content": item.get("content"),
+                            "metadata": item.get("metadata", {}),
+                            "type": "fallback",
+                            "collection": "fallback_store"
+                        }
+            except Exception:
+                pass
             return None
 
         # Search all collections for the ID
@@ -813,15 +890,138 @@ class VectorMemory:
 
         return deleted
 
+    # -----------------
+    # Fallback JSON store helpers
+    # -----------------
+    async def _fallback_load(self) -> List[Dict[str, Any]]:
+        """Load the fallback JSON store (returns list)."""
+        try:
+            import aiofiles
+        except Exception:
+            aiofiles = None
+
+        # Ensure directory exists
+        try:
+            os.makedirs(self.db_path, exist_ok=True)
+        except Exception:
+            pass
+
+        if aiofiles:
+            try:
+                async with aiofiles.open(self.fallback_store_file, "r", encoding="utf-8") as f:
+                    text = await f.read()
+                    if not text:
+                        return []
+                    return json.loads(text)
+            except FileNotFoundError:
+                return []
+            except Exception:
+                return []
+        else:
+            # Sync fallback
+            try:
+                if not os.path.exists(self.fallback_store_file):
+                    return []
+                with open(self.fallback_store_file, "r", encoding="utf-8") as f:
+                    text = f.read()
+                    if not text:
+                        return []
+                    return json.loads(text)
+            except Exception:
+                return []
+
+    async def _fallback_save(self, data: List[Dict[str, Any]]):
+        """Save the fallback JSON store."""
+        try:
+            import aiofiles
+        except Exception:
+            aiofiles = None
+
+        try:
+            os.makedirs(self.db_path, exist_ok=True)
+        except Exception:
+            pass
+
+        if aiofiles:
+            try:
+                async with aiofiles.open(self.fallback_store_file, "w", encoding="utf-8") as f:
+                    await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            except Exception:
+                # Best-effort; do not raise
+                pass
+        else:
+            try:
+                with open(self.fallback_store_file, "w", encoding="utf-8") as f:
+                    f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            except Exception:
+                pass
+
+    async def _fallback_find_duplicate(self, content: str) -> Optional[Dict[str, Any]]:
+        """Try to find a duplicate in the fallback store using exact fingerprint
+        or a simple similarity heuristic. Returns the matching entry or None.
+        """
+        try:
+            import hashlib
+            from difflib import SequenceMatcher
+        except Exception:
+            hashlib = None
+            SequenceMatcher = None
+
+        items = await self._fallback_load()
+        fingerprint = None
+        if hashlib:
+            fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        # Exact fingerprint match
+        if fingerprint:
+            for it in items:
+                it_fp = it.get("_fingerprint")
+                if it_fp and it_fp == fingerprint:
+                    return it
+
+        # Fuzzy match using SequenceMatcher
+        if SequenceMatcher:
+            best = None
+            best_score = 0.0
+            for it in items:
+                other = it.get("content", "")
+                try:
+                    score = SequenceMatcher(None, content, other).ratio()
+                except Exception:
+                    score = 0.0
+                if score > best_score:
+                    best_score = score
+                    best = it
+            if best and best_score >= 0.8:
+                return best
+
+        return None
+
+    async def _fallback_add(self, entry: Dict[str, Any]):
+        """Add an entry to the fallback store (best-effort)."""
+        try:
+            import hashlib
+        except Exception:
+            hashlib = None
+
+        items = await self._fallback_load()
+        if hashlib:
+            entry["_fingerprint"] = hashlib.sha256(entry.get("content", "").encode("utf-8")).hexdigest()
+        items.append(entry)
+        await self._fallback_save(items)
+
     async def get_stats(self) -> Dict[str, Any]:
         """Get vector memory statistics"""
         if not self.is_initialized:
             await self.initialize()
 
         if not CHROMADB_AVAILABLE or not self.client:
+            # Provide minimal stats for fallback mode
+            fallback_items = await self._fallback_load()
             return {
-                "error": "ChromaDB not available",
-                "collections": {}
+                "chromadb_available": False,
+                "fallback_count": len(fallback_items),
+                "collections": {},
             }
 
         stats = {}

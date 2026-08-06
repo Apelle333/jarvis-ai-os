@@ -5,6 +5,7 @@ Coordinates short-term and long-term memory systems
 
 import asyncio
 import logging
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import json
@@ -26,10 +27,11 @@ class MemoryManager:
         self.sqlite_memory: Optional[SQLiteMemory] = None
         self.vector_memory: Optional[VectorMemory] = None
 
-        # Configuration
-        self.short_term_limit = 1000  # Max short-term memories
-        self.long_term_threshold = 0.7  # Similarity threshold for long-term storage
-        self.consolidation_interval = 3600  # seconds (1 hour)
+        # Configuration (override via environment variables)
+        self.short_term_limit = int(os.getenv('JARVIS_MEMORY_SHORT_TERM_LIMIT', '1000'))  # Max short-term memories
+        self.retention_days = int(os.getenv('JARVIS_MEMORY_RETENTION_DAYS', '30'))  # Days to keep before archiving
+        self.long_term_threshold = float(os.getenv('JARVIS_MEMORY_LONG_TERM_THRESHOLD', str(0.7)))  # Similarity threshold for long-term storage
+        self.consolidation_interval = int(os.getenv('JARVIS_MEMORY_CONSOLIDATION_INTERVAL', '3600'))  # seconds (1 hour)
         self.last_consolidation = datetime.now()
 
         # Memory types
@@ -610,6 +612,32 @@ class MemoryManager:
             stats["error"] = str(e)
             return stats
 
+    async def prune_short_term(self) -> Dict[str, Any]:
+        """Prune short-term memory to configured limits and by retention days.
+
+        This archives old items (via SQLiteMemory) and never permanently deletes user data.
+        """
+        if not self.is_initialized:
+            await self.initialize()
+
+        stats = {"pruned": 0, "details": {}, "retention_days": self.retention_days, "limit": self.short_term_limit}
+        try:
+            # Archive items older than retention_days
+            cutoff = datetime.now() - timedelta(days=self.retention_days)
+            arch_res = await self.sqlite_memory.clear_old_memories(cutoff)
+            stats["details"]["archived_by_age"] = arch_res.get("details", {}) if isinstance(arch_res, dict) else {}
+
+            # Prune to short_term_limit
+            prune_res = await self.sqlite_memory.prune_to_limit(self.short_term_limit)
+            stats["details"]["pruned_to_limit"] = prune_res
+            stats["pruned"] = prune_res.get("moved", 0) if isinstance(prune_res, dict) else 0
+
+            return stats
+        except Exception as e:
+            self.logger.error(f"Error pruning short-term memories: {e}")
+            stats["error"] = str(e)
+            return stats
+
     async def _should_consolidate(self, memory_item: Dict[str, Any]) -> bool:
         """
         Determine if a memory item should be consolidated to long-term memory
@@ -770,9 +798,22 @@ class MemoryManager:
         sqlite_stats = await self.sqlite_memory.get_stats()
         vector_stats = await self.vector_memory.get_stats()
 
+        # Archive counts (if available)
+        try:
+            archive_counts = await self.sqlite_memory.get_archive_counts()
+        except Exception:
+            archive_counts = {}
+
+        # Vector fallback flag
+        chroma_available = bool(vector_stats.get("chromadb_available", True))
+        fallback_count = int(vector_stats.get("fallback_count", 0)) if isinstance(vector_stats, dict) else 0
+
         return {
             "short_term": sqlite_stats,
             "long_term": vector_stats,
+            "archive_counts": archive_counts,
+            "chroma_available": chroma_available,
+            "vector_fallback_count": fallback_count,
             "last_consolidation": self.last_consolidation.isoformat() if self.last_consolidation else None,
             "consolidation_interval_seconds": self.consolidation_interval,
             "is_initialized": self.is_initialized

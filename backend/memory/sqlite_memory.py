@@ -138,6 +138,86 @@ class SQLiteMemory:
             ON tasks(status)
         """)
 
+        # Archive tables for safe pruning/archiving (preserve original IDs)
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS conversations_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER,
+                role TEXT,
+                content TEXT,
+                modality TEXT,
+                timestamp DATETIME,
+                metadata TEXT,
+                is_consolidated BOOLEAN DEFAULT 0,
+                created_at DATETIME,
+                archived_at DATETIME
+            )
+        """)
+
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS preferences_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER,
+                key TEXT,
+                value TEXT,
+                category TEXT,
+                timestamp DATETIME,
+                metadata TEXT,
+                created_at DATETIME,
+                archived_at DATETIME
+            )
+        """)
+
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS events_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER,
+                title TEXT,
+                description TEXT,
+                event_type TEXT,
+                start_time DATETIME,
+                end_time DATETIME,
+                location TEXT,
+                participants TEXT,
+                timestamp DATETIME,
+                metadata TEXT,
+                created_at DATETIME,
+                archived_at DATETIME
+            )
+        """)
+
+        await self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS tasks_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_id INTEGER,
+                title TEXT,
+                description TEXT,
+                status TEXT,
+                priority INTEGER,
+                due_date DATETIME,
+                assigned_to TEXT,
+                tags TEXT,
+                timestamp DATETIME,
+                metadata TEXT,
+                created_at DATETIME,
+                archived_at DATETIME
+            )
+        """)
+
+        # Indexes for archive tables
+        await self.connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_archive_timestamp
+            ON conversations_archive(timestamp)
+        """)
+        await self.connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_archive_timestamp
+            ON events_archive(timestamp)
+        """)
+        await self.connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tasks_archive_timestamp
+            ON tasks_archive(timestamp)
+        """)
+
         await self.connection.commit()
 
     async def store_conversation(
@@ -676,40 +756,172 @@ class SQLiteMemory:
         return results
 
     async def mark_as_consolidated(self, memory_id: int) -> bool:
-        """Mark a conversation as consolidated"""
+        """Mark a conversation as consolidated and record consolidated_at in metadata"""
         if not self.is_initialized:
             await self.initialize()
 
+        # Fetch existing metadata
+        cursor = await self.connection.execute("SELECT metadata FROM conversations WHERE id = ?", (memory_id,))
+        row = await cursor.fetchone()
+        metadata = {}
+        if row and row[0]:
+            try:
+                metadata = json.loads(row[0])
+            except Exception:
+                metadata = {}
+
+        metadata["consolidated_at"] = datetime.now().isoformat()
+        # Update record: set is_consolidated and updated metadata
         cursor = await self.connection.execute(
-            "UPDATE conversations SET is_consolidated = 1 WHERE id = ?",
-            (memory_id,)
+            "UPDATE conversations SET is_consolidated = 1, metadata = ? WHERE id = ?",
+            (json.dumps(metadata), memory_id)
         )
         await self.connection.commit()
         return cursor.rowcount > 0
 
     async def clear_old_memories(self, cutoff_date: datetime) -> Dict[str, Any]:
-        """Clear memories older than cutoff date"""
+        """Archive memories older than cutoff date instead of deleting them.
+
+        Moves matching rows into corresponding *_archive tables and removes from
+        the active tables to preserve user data while freeing active space.
+        """
         if not self.is_initialized:
             await self.initialize()
 
         cutoff_str = cutoff_date.isoformat()
 
-        tables = ["conversations", "preferences", "events", "tasks"]
-        results = {}
+        details = {}
 
-        for table in tables:
-            cursor = await self.connection.execute(
-                f"DELETE FROM {table} WHERE timestamp < ?",
-                (cutoff_str,)
+        # Conversations
+        conv_cursor = await self.connection.execute(
+            "SELECT id, role, content, modality, timestamp, metadata, is_consolidated, created_at FROM conversations WHERE timestamp < ?",
+            (cutoff_str,)
+        )
+        conv_rows = await conv_cursor.fetchall()
+        moved_conv = 0
+        for row in conv_rows:
+            original_id = row[0]
+            await self.connection.execute(
+                "INSERT INTO conversations_archive (original_id, role, content, modality, timestamp, metadata, is_consolidated, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (original_id, row[1], row[2], row[3], row[4], row[5], row[6], row[7], datetime.now().isoformat())
             )
-            await self.connection.commit()
-            results[table] = cursor.rowcount
+            await self.connection.execute("DELETE FROM conversations WHERE id = ?", (original_id,))
+            moved_conv += 1
+
+        await self.connection.commit()
+        details["conversations"] = moved_conv
+
+        # Preferences
+        pref_cursor = await self.connection.execute(
+            "SELECT id, key, value, category, timestamp, metadata, created_at FROM preferences WHERE timestamp < ?",
+            (cutoff_str,)
+        )
+        pref_rows = await pref_cursor.fetchall()
+        moved_pref = 0
+        for row in pref_rows:
+            original_id = row[0]
+            await self.connection.execute(
+                "INSERT INTO preferences_archive (original_id, key, value, category, timestamp, metadata, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (original_id, row[1], row[2], row[3], row[4], row[5], row[6], datetime.now().isoformat())
+            )
+            await self.connection.execute("DELETE FROM preferences WHERE id = ?", (original_id,))
+            moved_pref += 1
+
+        await self.connection.commit()
+        details["preferences"] = moved_pref
+
+        # Events
+        ev_cursor = await self.connection.execute(
+            "SELECT id, title, description, event_type, start_time, end_time, location, participants, timestamp, metadata, created_at FROM events WHERE timestamp < ?",
+            (cutoff_str,)
+        )
+        ev_rows = await ev_cursor.fetchall()
+        moved_ev = 0
+        for row in ev_rows:
+            original_id = row[0]
+            await self.connection.execute(
+                "INSERT INTO events_archive (original_id, title, description, event_type, start_time, end_time, location, participants, timestamp, metadata, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (original_id, row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], datetime.now().isoformat())
+            )
+            await self.connection.execute("DELETE FROM events WHERE id = ?", (original_id,))
+            moved_ev += 1
+
+        await self.connection.commit()
+        details["events"] = moved_ev
+
+        # Tasks
+        task_cursor = await self.connection.execute(
+            "SELECT id, title, description, status, priority, due_date, assigned_to, tags, timestamp, metadata, created_at FROM tasks WHERE timestamp < ?",
+            (cutoff_str,)
+        )
+        task_rows = await task_cursor.fetchall()
+        moved_tasks = 0
+        for row in task_rows:
+            original_id = row[0]
+            await self.connection.execute(
+                "INSERT INTO tasks_archive (original_id, title, description, status, priority, due_date, assigned_to, tags, timestamp, metadata, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (original_id, row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], datetime.now().isoformat())
+            )
+            await self.connection.execute("DELETE FROM tasks WHERE id = ?", (original_id,))
+            moved_tasks += 1
+
+        await self.connection.commit()
+        details["tasks"] = moved_tasks
 
         return {
-            "deleted_count": sum(results.values()),
-            "details": results,
+            "archived_count": sum(details.values()),
+            "details": details,
             "cutoff_date": cutoff_str
         }
+
+    async def get_archive_counts(self) -> Dict[str, int]:
+        """Return counts of archived items per archive table"""
+        if not self.is_initialized:
+            await self.initialize()
+
+        counts = {}
+        for table in ["conversations_archive", "preferences_archive", "events_archive", "tasks_archive"]:
+            cursor = await self.connection.execute(f"SELECT COUNT(*) FROM {table}")
+            row = await cursor.fetchone()
+            counts[table] = row[0] if row else 0
+        return counts
+
+    async def prune_to_limit(self, limit: int = 1000) -> Dict[str, Any]:
+        """Prune active short-term memories down to 'limit' by archiving oldest non-consolidated items.
+
+        Returns counts of moved records. Does not permanently delete user data.
+        """
+        if not self.is_initialized:
+            await self.initialize()
+
+        # Check current active conversation count
+        cursor = await self.connection.execute("SELECT COUNT(*) FROM conversations WHERE is_consolidated = 0")
+        active = (await cursor.fetchone())[0]
+        moved = 0
+        details = {"conversations_moved": 0}
+
+        if active <= limit:
+            return {"moved": 0, "active": active, "limit": limit}
+
+        to_move = active - limit
+        # Select oldest non-consolidated conversations to archive
+        sel_cursor = await self.connection.execute(
+            "SELECT id, role, content, modality, timestamp, metadata, is_consolidated, created_at FROM conversations WHERE is_consolidated = 0 ORDER BY timestamp ASC LIMIT ?",
+            (to_move,)
+        )
+        rows = await sel_cursor.fetchall()
+        for row in rows:
+            original_id = row[0]
+            await self.connection.execute(
+                "INSERT INTO conversations_archive (original_id, role, content, modality, timestamp, metadata, is_consolidated, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (original_id, row[1], row[2], row[3], row[4], row[5], row[6], row[7], datetime.now().isoformat())
+            )
+            await self.connection.execute("DELETE FROM conversations WHERE id = ?", (original_id,))
+            moved += 1
+
+        await self.connection.commit()
+        details["conversations_moved"] = moved
+        return {"moved": moved, "active_after": active - moved, "limit": limit, "details": details}
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get database statistics"""

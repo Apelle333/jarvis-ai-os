@@ -527,10 +527,36 @@ class SystemIntelligence:
             self.logger.error(f"Error getting memory stats: {e}")
             stats = {"error": str(e)}
 
+        # Compute additional indicators
+        short_term = stats.get("short_term", {})
+        long_term = stats.get("long_term", {})
+        archive_counts = stats.get("archive_counts", {})
+
+        prune_needed = False
+        try:
+            active_conv = int(short_term.get("conversations_active", 0))
+            limit = getattr(self.brain.memory_manager, "short_term_limit", None)
+            if limit is not None and active_conv > int(limit):
+                prune_needed = True
+        except Exception:
+            prune_needed = False
+
+        chroma_available = bool(stats.get("chroma_available", True))
+        vector_fallback = False
+        try:
+            if not chroma_available and int(stats.get("vector_fallback_count", 0)) > 0:
+                vector_fallback = True
+        except Exception:
+            vector_fallback = False
+
         return {
             "is_initialized": bool(getattr(self.brain.memory_manager, "is_initialized", False)),
-            "short_term": stats.get("short_term", {}),
-            "long_term": stats.get("long_term", {}),
+            "short_term": short_term,
+            "long_term": long_term,
+            "archive_counts": archive_counts,
+            "prune_needed": prune_needed,
+            "chroma_available": chroma_available,
+            "vector_fallback": vector_fallback,
             "last_consolidation": stats.get("last_consolidation"),
             "timestamp": datetime.now().isoformat(),
         }
