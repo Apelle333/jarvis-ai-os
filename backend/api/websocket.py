@@ -47,9 +47,12 @@ class ConnectionManager:
                 await self.active_connections[client_id].send_text(json.dumps(message))
                 self.connection_info[client_id]["last_activity"] = datetime.now()
                 self.connection_info[client_id]["message_count"] += 1
+                return True
             except Exception as e:
-                logger.error(f"Error sending message to client {client_id}: {e}")
+                logger.warning(f"Client {client_id} disconnected before message delivery: {e}")
                 self.disconnect(client_id)
+                return False
+        return False
 
     async def broadcast(self, message: dict):
         """Broadcast a message to all active connections concurrently.
@@ -112,13 +115,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, agent: MainAg
 
     try:
         # Send welcome message
-        await manager.send_personal_message({
+        connected = await manager.send_personal_message({
             "type": "connection",
             "status": "connected",
             "message": "Connected to JARVIS AI System",
             "client_id": client_id,
             "timestamp": datetime.now().isoformat()
         }, client_id)
+        if not connected:
+            return
 
         while True:
             # Receive message from client
