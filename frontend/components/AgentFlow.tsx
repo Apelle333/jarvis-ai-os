@@ -2,6 +2,7 @@
 
 import { motion } from 'framer-motion';
 import { useSystemPoll } from '@/components/system/useSystemPoll';
+import { useJarvis } from '@/context/JarvisContext';
 
 interface Agent {
   name?: string;
@@ -56,7 +57,7 @@ export default function AgentFlow() {
             {agents.length === 0 && (
               <p className="text-[10px] tracking-widest text-cyan-300/40 pl-3">NO AGENTS REGISTERED</p>
             )}
-            {agents.map((agent, i) => (
+            {agents.map((agent: any, i: number) => (
               <motion.div
                 key={agent.name ?? i}
                 initial={{ opacity: 0, x: 16 }}

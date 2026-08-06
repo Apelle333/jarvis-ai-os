@@ -16,17 +16,32 @@ interface ChatMessage {
  * talking to JARVIS - same backend call shape as before (POST /api/chat/message).
  */
 export default function FloatingCommandBar() {
-  const { backendUrl, isListening, setListening, setProcessing } = useJarvis();
+  const {
+    backendUrl,
+    clientId,
+    isListening,
+    setListening,
+    setProcessing,
+    setSpeaking
+  } = useJarvis();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     if (transcriptRef.current) {
       transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
     }
   }, [messages, isLoading]);
+
+  useEffect(() => () => {
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -75,6 +90,115 @@ export default function FloatingCommandBar() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+    }
+  };
+
+  const speakWithBrowser = (text: string) => {
+    if (!('speechSynthesis' in window) || !text) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    setSpeaking(true);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const playResponseAudio = async (base64Audio?: string, mime = 'audio/wav') => {
+    if (!base64Audio) return;
+    const binary = atob(base64Audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    const audio = new Audio(URL.createObjectURL(new Blob([bytes], { type: mime })));
+    setSpeaking(true);
+    audio.onended = () => {
+      URL.revokeObjectURL(audio.src);
+      setSpeaking(false);
+    };
+    audio.onerror = () => setSpeaking(false);
+    await audio.play();
+  };
+
+  const submitRecording = async (audio: Blob) => {
+    setListening(false);
+    setIsLoading(true);
+    setProcessing(true);
+    try {
+      const form = new FormData();
+      form.append('audio', audio, 'jarvis-recording.webm');
+      const response = await fetch(
+        `${backendUrl}/api/voice/process-voice?language=en&client_id=${encodeURIComponent(clientId)}`,
+        { method: 'POST', body: form }
+      );
+      if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+      const data = await response.json();
+      if (data.text) {
+        setMessages((prev) => [
+          ...prev,
+          { id: Math.random().toString(36).slice(2, 11), content: data.text, isUser: true }
+        ]);
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(36).slice(2, 11),
+          content: data.response || 'I could not understand that recording.',
+          isUser: false
+        }
+      ]);
+      if (data.audio_available) {
+        await playResponseAudio(data.audio, data.audio_mime);
+      } else {
+        speakWithBrowser(data.response || '');
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(36).slice(2, 11),
+          content: 'Voice processing failed. Check microphone permission and the JARVIS voice services.',
+          isUser: false
+        }
+      ]);
+    } finally {
+      setIsLoading(false);
+      setProcessing(false);
+    }
+  };
+
+  const toggleRecording = async () => {
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop();
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setMessages((prev) => [
+        ...prev,
+        { id: Math.random().toString(36).slice(2, 11), content: 'Voice input is not supported by this browser.', isUser: false }
+      ]);
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      recordingChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        recorderRef.current = null;
+        void submitRecording(new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' }));
+      };
+      recorder.start();
+      setListening(true);
+    } catch {
+      setListening(false);
+      setMessages((prev) => [
+        ...prev,
+        { id: Math.random().toString(36).slice(2, 11), content: 'Microphone access was not granted.', isUser: false }
+      ]);
     }
   };
 
@@ -136,10 +260,10 @@ export default function FloatingCommandBar() {
         <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-cyan-500/30 via-sky-400/20 to-cyan-500/30 blur-md opacity-60" />
         <div className="relative flex items-center gap-2 px-3 py-2.5 rounded-2xl hud-panel">
           <button
-            onClick={() => setListening(!isListening)}
+            onClick={() => void toggleRecording()}
             className={`hud-icon-btn ${isListening ? 'hud-icon-btn-active' : ''}`}
             aria-label="Toggle listening"
-            title="Audio link"
+            title={isListening ? 'Stop recording' : 'Start voice input'}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />

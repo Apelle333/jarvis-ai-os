@@ -123,6 +123,15 @@ class SQLiteMemory:
             ON conversations(role)
         """)
 
+        # The active conversation window is read for every chat turn.  The
+        # single-column timestamp index forces SQLite to filter a potentially
+        # large history after ordering it; this composite index serves the
+        # WHERE + ORDER BY used by get_recent_conversations directly.
+        await self.connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_active_recent
+            ON conversations(is_consolidated, timestamp DESC)
+        """)
+
         await self.connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_preferences_key
             ON preferences(key)

@@ -29,7 +29,10 @@ class MainAgent:
         self.brain = brain
         self.logger = logging.getLogger(__name__)
         self.personality = Personality()
-        self.memory_manager = MemoryManager()
+        # The Brain owns the single shared memory system. Creating another
+        # manager here duplicated SQLite/Chroma initialization and separated
+        # the agent's context from the conversations stored by the Brain.
+        self.memory_manager = brain.memory_manager
         self.is_initialized = False
         self.last_error: Optional[str] = None
 
@@ -50,7 +53,8 @@ class MainAgent:
         try:
             self.logger.info("Initializing Main Agent...")
             await self.personality.initialize()
-            await self.memory_manager.initialize()
+            if not getattr(self.memory_manager, "is_initialized", False):
+                await self.memory_manager.initialize()
             self.is_initialized = True
             self.logger.info("Main Agent initialized successfully")
         except Exception as e:

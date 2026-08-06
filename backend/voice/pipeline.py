@@ -169,6 +169,12 @@ class VoicePipeline:
             "response": response_text,
             "audio": base64.b64encode(audio_bytes_out).decode("ascii"),
             "audio_mime": "audio/wav",
+            # The frontend can use its native SpeechSynthesis fallback when
+            # Piper or its selected voice is not installed locally.
+            "audio_available": bool(
+                getattr(self.tts, "piper_path", None)
+                and getattr(self.tts, "available_voices", {}).get(settings.tts_voice)
+            ),
             "agent": result.get("agent") if isinstance(result, dict) else None,
             "timestamp": result.get("timestamp") if isinstance(result, dict) else datetime.now().isoformat(),
             "metadata": result.get("metadata") if isinstance(result, dict) else {},

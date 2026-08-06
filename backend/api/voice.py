@@ -119,6 +119,7 @@ async def process_voice(
             "response": result["response"],
             "audio": result["audio"],
             "audio_mime": result["audio_mime"],
+            "audio_available": result.get("audio_available", False),
             "agent": result.get("agent"),
             "timestamp": result.get("timestamp"),
             "metadata": result.get("metadata"),

@@ -136,9 +136,10 @@ export default function TitleBar() {
 }
 
 function LiveClock() {
-  const [time, setTime] = useState(() => formatClock());
+  const [time, setTime] = useState('--:--:--');
 
   useEffect(() => {
+    setTime(formatClock());
     const id = setInterval(() => setTime(formatClock()), 1000);
     return () => clearInterval(id);
   }, []);

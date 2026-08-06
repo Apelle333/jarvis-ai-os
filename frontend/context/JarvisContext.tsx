@@ -7,9 +7,8 @@ export const DEFAULT_BACKEND_URL = 'http://localhost:8000';
 export const getBackendUrl = () =>
   (process.env.NEXT_PUBLIC_BACKEND_URL || DEFAULT_BACKEND_URL).replace(/\/$/, '');
 
-export const getWebSocketUrl = () => {
+export const getWebSocketUrl = (clientId: string) => {
   const base = getBackendUrl().replace(/^http/, 'ws');
-  const clientId = `web_${Math.random().toString(36).substr(2, 10)}`;
   return `${base}/ws/${clientId}`;
 };
 
@@ -23,6 +22,7 @@ interface JarvisContextType {
   voiceText: string;
   setVoiceText: (text: string) => void;
   backendUrl: string;
+  clientId: string;
   backendOnline: boolean;
   wsConnected: boolean;
   status: Record<string, unknown> | null;
@@ -49,6 +49,7 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
   const [memoryState, setMemoryState] = useState<any | null>(null);
   const [systemState, setSystemState] = useState<any | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const clientIdRef = useRef(`web_${Math.random().toString(36).slice(2, 12)}`);
 
   const backendUrl = getBackendUrl();
 
@@ -94,7 +95,7 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
     const connect = () => {
       if (disposed) return;
       try {
-        ws = new WebSocket(getWebSocketUrl());
+        ws = new WebSocket(getWebSocketUrl(clientIdRef.current));
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -149,19 +150,19 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
 
             // Planner / model / agent state events
             if (msg.type === 'planner_state') {
-              setPlannerState(msg.payload ?? msg);
+              setPlannerState(msg.data ?? msg.payload ?? msg);
             }
             if (msg.type === 'agent_state') {
-              setAgentState(msg.payload ?? msg);
+              setAgentState(msg.data ?? msg.payload ?? msg);
             }
             if (msg.type === 'model_state') {
-              setModelState(msg.payload ?? msg);
+              setModelState(msg.data ?? msg.payload ?? msg);
             }
             if (msg.type === 'memory_state') {
-              setMemoryState(msg.payload ?? msg);
+              setMemoryState(msg.data ?? msg.payload ?? msg);
             }
             if (msg.type === 'system_state') {
-              setSystemState(msg.payload ?? msg);
+              setSystemState(msg.data ?? msg.payload ?? msg);
             }
 
           } catch {
@@ -207,6 +208,7 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
         voiceText,
         setVoiceText,
         backendUrl,
+        clientId: clientIdRef.current,
         backendOnline,
         wsConnected,
         status,

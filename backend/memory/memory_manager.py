@@ -33,6 +33,7 @@ class MemoryManager:
         self.long_term_threshold = float(os.getenv('JARVIS_MEMORY_LONG_TERM_THRESHOLD', str(0.7)))  # Similarity threshold for long-term storage
         self.consolidation_interval = int(os.getenv('JARVIS_MEMORY_CONSOLIDATION_INTERVAL', '3600'))  # seconds (1 hour)
         self.last_consolidation = datetime.now()
+        self._consolidation_task: Optional[asyncio.Task] = None
 
         # Memory types
         self.memory_types = {
@@ -797,9 +798,17 @@ class MemoryManager:
         """
         # Check if it's time for periodic consolidation
         now = datetime.now()
-        if (now - self.last_consolidation).total_seconds() > self.consolidation_interval:
-            # Trigger consolidation in background
-            asyncio.create_task(self.consolidate_memories())
+        if (now - self.last_consolidation).total_seconds() <= self.consolidation_interval:
+            return
+
+        # Consolidation may index many older records. Schedule only one run at
+        # a time and advance the interval before it starts, otherwise each new
+        # chat turn can enqueue another expensive maintenance job.
+        if self._consolidation_task is not None and not self._consolidation_task.done():
+            return
+
+        self.last_consolidation = now
+        self._consolidation_task = asyncio.create_task(self.consolidate_memories())
 
     async def get_stats(self) -> Dict[str, Any]:
         """Get memory system statistics"""

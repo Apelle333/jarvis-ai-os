@@ -23,18 +23,24 @@ from memory.memory_manager import MemoryManager
 from tools.system_monitor import SystemMonitor
 from tools.system_intelligence import SystemIntelligence
 
-
 logger = logging.getLogger(__name__)
 
 
 class SystemState(str, Enum):
     """System operational states"""
+
     IDLE = "idle"
     LISTENING = "listening"
     PROCESSING = "processing"
     EXECUTING = "executing"
     SPEAKING = "speaking"
     ERROR = "error"
+
+
+class CoreStatus(str, Enum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
 
 
 class JARVIS_Brain:
@@ -46,6 +52,8 @@ class JARVIS_Brain:
     def __init__(self):
         self.state = SystemState.IDLE
         self.settings = settings
+        self.core_status = CoreStatus.UNAVAILABLE
+        self.core_status_reasons = []
 
         self.planner = Planner()
         self.model_router = ModelRouter()
@@ -61,6 +69,7 @@ class JARVIS_Brain:
         self.last_model_selection = None
         self.last_agent_selection = None
         self.recent_decisions: list = []
+        self.startup_metrics: Dict[str, Any] = {}
 
         self.logger = logging.getLogger(__name__)
 
@@ -70,11 +79,12 @@ class JARVIS_Brain:
 
         logger.info("JARVIS Brain initialized")
 
-
     async def initialize(self):
         """Initialize all components"""
+        started = datetime.now()
         try:
             self.logger.info("Initializing JARVIS components...")
+            self.startup_metrics = {"started_at": started.isoformat()}
 
             # Initialize memory
             await self.memory_manager.initialize()
@@ -88,11 +98,19 @@ class JARVIS_Brain:
             # are missing we log and continue in degraded mode.
             try:
                 await self.model_router.initialize()
-                self.logger.info(f"Model availability: {self.model_router.available_models}")
+                self.logger.info(
+                    f"Model availability: {self.model_router.available_models}"
+                )
                 # If critical models are missing, mark degraded but continue
-                missing = [m for m, ok in self.model_router.available_models.items() if not ok]
+                missing = [
+                    m for m, ok in self.model_router.available_models.items() if not ok
+                ]
                 if missing:
-                    self.logger.warning(f"Some configured models are unavailable: {missing}. Running in degraded mode.")
+                    self.logger.warning(
+                        f"Some configured models are unavailable: {missing}. Running in degraded mode."
+                    )
+                    self.core_status = CoreStatus.DEGRADED
+                    self.core_status_reasons.append(f"unavailable models: {missing}")
             except Exception as model_error:
                 self.logger.error(
                     "Model router initialization failed (continuing in degraded mode): "
@@ -101,27 +119,37 @@ class JARVIS_Brain:
 
             # Startup diagnostics for optional components
             try:
-                vm = getattr(self.memory_manager, 'vector_memory', None)
-                if vm is None or not getattr(vm, 'is_initialized', False):
-                    self.logger.warning("Vector memory not initialized or unavailable - long-term memory will be degraded.")
+                vm = getattr(self.memory_manager, "vector_memory", None)
+                if vm is None or not getattr(vm, "is_initialized", False):
+                    self.logger.warning(
+                        "Vector memory not initialized or unavailable - long-term memory will be degraded."
+                    )
                 else:
                     try:
                         from memory import vector_memory as vm_mod
-                        if not getattr(vm_mod, 'CHROMADB_AVAILABLE', False):
-                            self.logger.info("ChromaDB not available; vector memory using fallback store")
+
+                        if not getattr(vm_mod, "CHROMADB_AVAILABLE", False):
+                            self.logger.info(
+                                "ChromaDB not available; vector memory using fallback store"
+                            )
                     except Exception:
                         # best-effort diagnostics only
                         pass
 
                 try:
                     import sentence_transformers  # type: ignore
+
                     self.logger.info("sentence-transformers available for embeddings")
                 except Exception:
-                    self.logger.info("sentence-transformers not available - embeddings will use fallback method")
+                    self.logger.info(
+                        "sentence-transformers not available - embeddings will use fallback method"
+                    )
 
             except Exception:
                 # Keep startup robust - diagnostics are helpful but non-fatal
-                self.logger.debug("Startup diagnostics encountered an issue (non-fatal)")
+                self.logger.debug(
+                    "Startup diagnostics encountered an issue (non-fatal)"
+                )
 
             # Initialize personality
             await self.personality.initialize()
@@ -129,18 +157,19 @@ class JARVIS_Brain:
             # Register specialist agents with the swarm
             await self._register_agents()
 
-            self.logger.info(
-                "JARVIS Brain initialized successfully"
-            )
+            self.core_status = CoreStatus.READY
+            self.core_status_reasons = []
+            self.startup_metrics["completed_at"] = datetime.now().isoformat()
+            self.startup_metrics["elapsed_ms"] = (
+                datetime.now() - started
+            ).total_seconds() * 1000
+
+            self.logger.info("JARVIS Brain initialized successfully")
 
         except Exception as e:
-            self.logger.error(
-                f"Failed to initialize JARVIS Brain: {e}",
-                exc_info=True
-            )
+            self.logger.error(f"Failed to initialize JARVIS Brain: {e}", exc_info=True)
             self.state = SystemState.ERROR
             raise
-
 
     async def _register_agents(self):
         """Register all specialist agents with the swarm"""
@@ -157,10 +186,7 @@ class JARVIS_Brain:
             if agent_type == AgentType.SYSTEM:
                 self.system_agent = instance
 
-        self.logger.info(
-            f"Registered {len(agent_instances)} agents with the swarm"
-        )
-
+        self.logger.info(f"Registered {len(agent_instances)} agents with the swarm")
 
     async def shutdown(self):
         """Shutdown all components gracefully"""
@@ -171,48 +197,34 @@ class JARVIS_Brain:
             await self.memory_manager.shutdown()
             await self.model_router.cleanup()
 
-            self.logger.info(
-                "JARVIS Brain shutdown complete"
-            )
+            self.logger.info("JARVIS Brain shutdown complete")
 
         except Exception as e:
-            self.logger.error(
-                f"Error during shutdown: {e}"
-            )
+            self.logger.error(f"Error during shutdown: {e}")
 
-
-    async def process_input(
-        self,
-        user_input: str,
-        modality: str = "text"
-    ) -> str:
+    async def process_input(self, user_input: str, modality: str = "text") -> str:
 
         self.request_count += 1
         self.state = SystemState.PROCESSING
 
         try:
-            self.logger.info(
-                f"Processing input ({modality}): {user_input[:100]}"
-            )
+            self.logger.info(f"Processing input ({modality}): {user_input[:100]}")
 
             await self.memory_manager.store_conversation(
                 role="user",
                 content=user_input,
                 modality=modality,
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
             )
 
-            context = await self.memory_manager.get_recent_context(
-                limit=10
-            )
+            context = await self.memory_manager.get_recent_context(limit=10)
 
             # ---- Computer Control fast-path --------------------------------
             # Deterministic, bilingual intent detection: known commands are
             # executed directly by the System Agent (no LLM round-trip).
             if self.system_agent is not None and settings.computer_control_enabled:
                 intent = detect_computer_command(
-                    user_input,
-                    pending=self.system_agent.pending_action
+                    user_input, pending=self.system_agent.pending_action
                 )
                 if intent is not None:
                     self.state = SystemState.EXECUTING
@@ -222,7 +234,7 @@ class JARVIS_Brain:
                     response = await self.personality.apply_personality(
                         response=result["response"],
                         context=context,
-                        user_input=user_input
+                        user_input=user_input,
                     )
                     await self.memory_manager.store_conversation(
                         role="assistant",
@@ -235,8 +247,10 @@ class JARVIS_Brain:
                             "category": intent.category,
                             "target": intent.target,
                             "success": result.get("success", False),
-                            "needs_confirmation": result.get("needs_confirmation", False),
-                        }
+                            "needs_confirmation": result.get(
+                                "needs_confirmation", False
+                            ),
+                        },
                     )
                     self.state = SystemState.IDLE
                     return response
@@ -244,16 +258,14 @@ class JARVIS_Brain:
             plan = await self.planner.create_plan(
                 user_input=user_input,
                 context=context,
-                personality_state=await self.personality.get_current_state()
+                personality_state=await self.personality.get_current_state(),
             )
 
             # Persist plan for observability
             self.last_plan = plan
 
             model_selection = await self.model_router.select_model(
-                task_type=plan.task_type,
-                complexity=plan.complexity,
-                context=context
+                task_type=plan.task_type, complexity=plan.complexity, context=context
             )
 
             # Persist model selection metadata for diagnostics
@@ -262,13 +274,12 @@ class JARVIS_Brain:
                 "reason": model_selection.reason,
                 "temperature": model_selection.temperature,
                 "max_tokens": model_selection.max_tokens,
-                "confidence": getattr(model_selection, 'confidence', None)
+                "confidence": getattr(model_selection, "confidence", None),
             }
 
             if plan.task_type == TaskType.SYSTEM_ANALYSIS:
                 result = await self._handle_system_analysis(
-                    user_input=user_input,
-                    context=context
+                    user_input=user_input, context=context
                 )
 
             elif plan.requires_agents:
@@ -280,20 +291,18 @@ class JARVIS_Brain:
                     model=model_selection.model,
                     context=context,
                     temperature=model_selection.temperature,
-                    max_tokens=model_selection.max_tokens
+                    max_tokens=model_selection.max_tokens,
                 )
 
             response = await self.personality.apply_personality(
-                response=result,
-                context=context,
-                user_input=user_input
+                response=result, context=context, user_input=user_input
             )
 
             await self.memory_manager.store_conversation(
                 role="assistant",
                 content=response,
                 modality="text",
-                timestamp=datetime.now()
+                timestamp=datetime.now(),
             )
 
             self.state = SystemState.IDLE
@@ -304,26 +313,16 @@ class JARVIS_Brain:
             self.error_count += 1
             self.state = SystemState.ERROR
 
-            self.logger.error(
-                f"Error processing input: {e}",
-                exc_info=True
-            )
+            self.logger.error(f"Error processing input: {e}", exc_info=True)
 
             return await self.personality.handle_error(str(e))
 
-
-    async def _handle_system_analysis(
-        self,
-        user_input: str,
-        context: list
-    ) -> str:
+    async def _handle_system_analysis(self, user_input: str, context: list) -> str:
         """Route system/state questions through SystemIntelligence (real data)"""
         text = user_input.lower()
         si = self.system_intelligence
 
-        data = {
-            "status": await si.get_system_status()
-        }
+        data = {"status": await si.get_system_status()}
 
         if "module" in text or "component" in text:
             data["modules"] = await si.get_active_modules()
@@ -451,9 +450,7 @@ class JARVIS_Brain:
             if loaded:
                 lines.append("Loaded now: " + ", ".join(loaded))
         else:
-            lines.append(
-                f"Ollama: OFFLINE ({ollama.get('error') or 'unreachable'})"
-            )
+            lines.append(f"Ollama: OFFLINE ({ollama.get('error') or 'unreachable'})")
 
         agents = status.get("agents", {})
         agent_list = agents.get("agents", [])
@@ -483,9 +480,7 @@ class JARVIS_Brain:
             )
 
         for p in data.get("processes", {}).get("top_by_cpu", [])[:5]:
-            lines.append(
-                f"TOP CPU: {p.get('name')} ({p.get('cpu_percent')}%)"
-            )
+            lines.append(f"TOP CPU: {p.get('name')} ({p.get('cpu_percent')}%)")
 
         return "\n".join(lines)
 
@@ -501,9 +496,8 @@ class JARVIS_Brain:
             "error_count": self.error_count,
             "memory_stats": await self.memory_manager.get_stats(),
             "system_stats": await self.system_monitor.get_current_stats(),
-            "model_info": await self.model_router.get_available_models()
+            "model_info": await self.model_router.get_available_models(),
         }
-
 
     def set_state(self, state: SystemState):
         """Set system state"""
@@ -511,6 +505,4 @@ class JARVIS_Brain:
         old_state = self.state
         self.state = state
 
-        self.logger.info(
-            f"State changed: {old_state.value} -> {state.value}"
-        )
+        self.logger.info(f"State changed: {old_state.value} -> {state.value}")
