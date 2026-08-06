@@ -54,56 +54,96 @@ class ModelRouter:
 
         Models can fill multiple roles (e.g. coder == reasoning), so the
         capability list for each model name is accumulated across roles.
-        """
-        default_model = settings.default_model or "gemma4:12b"
-        coder_model = settings.coder_model or "qwen3.6:27b-q4_K_M"
-        reasoning_model = settings.reasoning_model or "qwen3.6:27b-q4_K_M"
 
+        This implementation persists the routing strategy from configuration
+        (core/settings) and exposes primary/fallback choices for each role.
+        """
+        # Primary/fallback from settings (user-provided priorities)
+        rp = settings.reasoning_primary
+        rf = settings.reasoning_fallback
+        cp = settings.coding_primary
+        cf = settings.coding_fallback
+        gp = settings.general_primary
+        gf = settings.general_fallback
+        pp = settings.personality_primary
+        pf = settings.personality_fallback
+        fp = settings.fast_primary
+        emergency = settings.emergency_fallback
+        last_resort = settings.last_resort_model
+
+        # Canonical model slots used across the system
         self.models = {
-            "default": default_model,
-            "coder": coder_model,
-            "reasoning": reasoning_model,
+            "reasoning_primary": rp,
+            "reasoning_fallback": rf,
+            "coding_primary": cp,
+            "coding_fallback": cf,
+            "general_primary": gp,
+            "general_fallback": gf,
+            "personality_primary": pp,
+            "personality_fallback": pf,
+            "fast_primary": fp,
+            "emergency_fallback": emergency,
+            "last_resort": last_resort,
         }
 
+        # Map roles to TaskType coverage
         role_capabilities = [
-            (default_model, [
+            (gp, [
+                TaskType.GENERAL_QUESTION,
+                TaskType.CREATIVE_WRITING,
+                TaskType.FILE_OPERATION,
+                TaskType.SYSTEM_COMMAND,
+                TaskType.AUTOMATION,
+            ]),
+            (gf, [
                 TaskType.GENERAL_QUESTION,
                 TaskType.CREATIVE_WRITING,
                 TaskType.RESEARCH,
                 TaskType.ANALYSIS,
-                TaskType.FILE_OPERATION,
-                TaskType.SYSTEM_COMMAND,
-                TaskType.AUTOMATION,
-                TaskType.SYSTEM_ANALYSIS,
             ]),
-            (coder_model, [
+            (cp, [
                 TaskType.CODE_GENERATION,
                 TaskType.CODE_REVIEW,
                 TaskType.DEBUGGING,
-                TaskType.ARCHITECTURE_DESIGN,
                 TaskType.REFACTORING,
-                TaskType.PLANNING,
-                TaskType.ANALYSIS,
+                TaskType.ARCHITECTURE_DESIGN,
             ]),
-            (reasoning_model, [
+            (rp, [
                 TaskType.PLANNING,
                 TaskType.RESEARCH,
                 TaskType.ANALYSIS,
-                TaskType.CODE_GENERATION,
-                TaskType.DEBUGGING,
-                TaskType.ARCHITECTURE_DESIGN,
-                TaskType.REFACTORING,
                 TaskType.SYSTEM_ANALYSIS,
             ]),
+            (pp, [
+                TaskType.GENERAL_QUESTION,
+                TaskType.CREATIVE_WRITING,
+            ]),
+            (fp, [
+                TaskType.GENERAL_QUESTION,
+                TaskType.FILE_OPERATION,
+            ])
         ]
 
         merged: Dict[str, List[TaskType]] = {}
         for model_name, task_types in role_capabilities:
+            if not model_name:
+                continue
             merged.setdefault(model_name, [])
             for task_type in task_types:
                 if task_type not in merged[model_name]:
                     merged[model_name].append(task_type)
+        # Ensure last_resort exists in mapping
+        merged.setdefault(last_resort, [])
         self.model_capabilities = merged
+
+        # Also expose a simple role -> [primary, fallback] mapping for selection
+        self.role_map = {
+            "reasoning": [rp, rf, emergency, last_resort],
+            "coding": [cp, cf, rp, emergency, last_resort],
+            "general": [gp, gf, fp, emergency, last_resort],
+            "personality": [pp, pf, gp, emergency, last_resort],
+            "fast": [fp, gp, emergency, last_resort],
+        }
 
     async def initialize(self):
         """Initialize the model router by checking available models."""
@@ -180,33 +220,71 @@ class ModelRouter:
         """
         complexity = self._normalize_complexity(complexity)
 
-        # Get candidate models for this task type.
-        candidate_models = []
-        for model, capabilities in self.model_capabilities.items():
-            if task_type in capabilities and self.available_models.get(model, False):
-                candidate_models.append(model)
+        # Category-aware routing: map task_type to one of our roles
+        role = self._determine_role_for_task(task_type)
 
-        # Fall back to general-purpose models if none are specialized.
-        if not candidate_models:
-            candidate_models = [
-                model for model, available in self.available_models.items()
-                if available
-                and TaskType.GENERAL_QUESTION in self.model_capabilities.get(model, [])
-            ]
+        candidates = []
+        role_candidates = self.role_map.get(role, [])
+        # Preserve priority order in role_candidates (primary, fallback...)
+        for m in role_candidates:
+            if not m:
+                continue
+            # Prefer exact available check, tolerate suffix differences
+            if await self.is_model_available(m):
+                candidates.append(m)
 
-        # Last resort: any available model.
-        if not candidate_models:
-            candidate_models = [
-                model for model, available in self.available_models.items()
-                if available
-            ]
+        # If no candidate from role_map, fall back to any available models that claim capability
+        if not candidates:
+            for model_name, available in self.available_models.items():
+                if available and task_type in self.model_capabilities.get(model_name, []):
+                    candidates.append(model_name)
 
-        # If nothing is known to be available, prefer the default model.
-        if not candidate_models:
-            candidate_models = [self.models["default"]]
+        # If still nothing, use emergency fallback and last resort if available
+        if not candidates:
+            if await self.is_model_available(settings.emergency_fallback):
+                candidates.append(settings.emergency_fallback)
+            if await self.is_model_available(settings.last_resort_model):
+                candidates.append(settings.last_resort_model)
 
-        selected_model = await self._select_best_model(
-            candidate_models, task_type, complexity, context
+        # If still empty, assume default
+        if not candidates:
+            candidates = [self.models.get("default", settings.default_model)]
+
+        selected_model = None
+        if len(candidates) == 1:
+            selected_model = candidates[0]
+        else:
+            selected_model = await self._select_best_model(candidates, task_type, complexity, context)
+
+        # Track latency for model availability checks (simple timestamp)
+        import time
+        start = time.perf_counter()
+        # is_model_available checks already occurred above; record elapsed
+        elapsed = time.perf_counter() - start
+
+        temperature, max_tokens = self._get_model_parameters(task_type, complexity)
+
+        reason = self._generate_selection_reason(
+            selected_model, task_type, complexity, candidates
+        )
+
+        # Append routing metadata into reason and log selection
+        routing_meta = {
+            "role": role,
+            "candidates": candidates,
+            "selection_latency_sec": round(elapsed, 4),
+        }
+
+        full_reason = f"{reason} | routing_meta={routing_meta}"
+        self.logger.info(f"Selected model {selected_model} for {task_type.value} (role={role}) - candidates={candidates}")
+
+        return ModelSelection(
+            model=selected_model,
+            confidence=0.9,
+            reason=full_reason,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_p=0.9,
         )
 
         temperature, max_tokens = self._get_model_parameters(
