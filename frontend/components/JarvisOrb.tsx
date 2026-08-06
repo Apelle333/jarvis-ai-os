@@ -8,18 +8,27 @@ type OrbState = 'idle' | 'listening' | 'processing' | 'speaking' | 'executing';
 const PARTICLE_COUNT = 8;
 
 export default function JarvisOrb({ className = '' }: { className?: string }) {
-  const { isListening, isProcessing, isSpeaking, backendOnline } = useJarvis();
+  const { isListening, isProcessing, isSpeaking, backendOnline, plannerState, agentState, systemState } = useJarvis();
   const [hovered, setHovered] = useState(false);
 
-  const state: OrbState = isListening
-    ? 'listening'
-    : isProcessing
-      ? 'processing'
-      : isSpeaking
-        ? 'speaking'
-        : backendOnline
-          ? 'idle'
-          : 'executing';
+  // Enhanced state mapping using runtime telemetry
+  let state: OrbState = 'idle';
+
+  if (systemState && systemState.error) {
+    state = 'error';
+  } else if (isListening || (systemState && systemState.voice_state === 'listening')) {
+    state = 'listening';
+  } else if (agentState && agentState.active_task) {
+    state = 'executing';
+  } else if (isProcessing || (plannerState && (plannerState.last_plan_id || plannerState.current_step))) {
+    state = 'processing';
+  } else if (isSpeaking) {
+    state = 'speaking';
+  } else if (!backendOnline) {
+    state = 'executing';
+  } else {
+    state = 'idle';
+  }
 
   const particles = useMemo(
     () =>

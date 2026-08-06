@@ -26,6 +26,11 @@ interface JarvisContextType {
   backendOnline: boolean;
   wsConnected: boolean;
   status: Record<string, unknown> | null;
+  plannerState: any | null;
+  agentState: any | null;
+  modelState: any | null;
+  memoryState: any | null;
+  systemState: any | null;
 }
 
 const JarvisContext = createContext<JarvisContextType | undefined>(undefined);
@@ -38,6 +43,11 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
   const [backendOnline, setBackendOnline] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [status, setStatus] = useState<Record<string, unknown> | null>(null);
+  const [plannerState, setPlannerState] = useState<any | null>(null);
+  const [agentState, setAgentState] = useState<any | null>(null);
+  const [modelState, setModelState] = useState<any | null>(null);
+  const [memoryState, setMemoryState] = useState<any | null>(null);
+  const [systemState, setSystemState] = useState<any | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const backendUrl = getBackendUrl();
@@ -96,7 +106,16 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
           if (disposed) return;
           try {
             const msg = JSON.parse(event.data);
-            if (msg.type === 'status') setStatus(msg);
+            if (msg.type === 'status') {
+              setStatus(msg);
+              // allow system snapshot to populate systemState/plannerState
+              if (msg.planner) setPlannerState(msg.planner);
+              if (msg.agents) setAgentState(msg.agents);
+              if (msg.model) setModelState(msg.model);
+              if (msg.memory) setMemoryState(msg.memory);
+              if (msg.system) setSystemState(msg.system);
+            }
+
             // Voice state messages: update local voice state
             if (msg.type === 'voice_state') {
               const state = msg.state;
@@ -127,6 +146,24 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
                 setVoiceText(msg.text);
               }
             }
+
+            // Planner / model / agent state events
+            if (msg.type === 'planner_state') {
+              setPlannerState(msg.payload ?? msg);
+            }
+            if (msg.type === 'agent_state') {
+              setAgentState(msg.payload ?? msg);
+            }
+            if (msg.type === 'model_state') {
+              setModelState(msg.payload ?? msg);
+            }
+            if (msg.type === 'memory_state') {
+              setMemoryState(msg.payload ?? msg);
+            }
+            if (msg.type === 'system_state') {
+              setSystemState(msg.payload ?? msg);
+            }
+
           } catch {
             // ignore non-JSON frames
           }
@@ -172,7 +209,12 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
         backendUrl,
         backendOnline,
         wsConnected,
-        status
+        status,
+        plannerState,
+        agentState,
+        modelState,
+        memoryState,
+        systemState
       }}
     >
       {children}

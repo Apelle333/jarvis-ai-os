@@ -84,6 +84,24 @@ export default function SystemHUD() {
 
         <div className="my-3 hud-divider" />
 
+        {/* Planner / Model quick view */}
+        {snap?.planner && (
+          <div className="mb-3">
+            <div className="flex justify-between items-baseline mb-1">
+              <span className="hud-label">TASK</span>
+              <span className="hud-value text-[10px] truncate">{snap.planner.last_plan_id ?? '—'}</span>
+            </div>
+            <div className="flex justify-between items-baseline mb-1">
+              <span className="hud-label">INTENT</span>
+              <span className="hud-value text-[10px]">{snap.planner.last_task_type ?? '—'}</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+              <span className="hud-label">CONF</span>
+              <span className="hud-value text-[10px]">{(snap.planner.last_plan_confidence ?? 0).toString()}</span>
+            </div>
+          </div>
+        )}
+
         <Meter label="CPU" value={snap?.cpu_percent ?? 0} />
         <Meter label="RAM" value={snap?.memory_percent ?? 0} />
         <Meter label="DISK" value={snap?.disk_percent ?? 0} />

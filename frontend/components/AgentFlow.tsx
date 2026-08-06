@@ -20,9 +20,11 @@ interface AgentsResponse {
  */
 export default function AgentFlow() {
   const { data } = useSystemPoll<AgentsResponse>('/api/system/agents', 15000);
+  const { agentState } = useJarvis();
 
-  const agents = data?.agents ?? [];
-  const active = data?.active ?? 0;
+  // Prefer live websocket agentState when available
+  const agents = agentState?.agents ?? data?.agents ?? [];
+  const active = agentState?.active ?? data?.active ?? 0;
 
   return (
     <motion.aside
