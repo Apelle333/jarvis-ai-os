@@ -3,6 +3,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
+use crate::backend;
 use crate::settings;
 
 const MENU_ID_SHOW: &str = "show";
@@ -40,6 +41,7 @@ pub fn create_tray(app: &AppHandle, cfg: settings::AppSettings) -> tauri::Result
             MENU_ID_START_MIN => toggle_start_minimized(app),
             MENU_ID_AUTOSTART => toggle_autostart(app),
             MENU_ID_QUIT => {
+                backend::shutdown_backend(app);
                 let _ = app.exit(0);
             }
             _ => {}

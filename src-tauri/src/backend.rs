@@ -2,6 +2,7 @@ use std::net::TcpStream;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::Emitter;
@@ -12,6 +13,9 @@ use crate::settings;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
 const BACKEND_TIMEOUT_SECS: u64 = 90;
+
+#[derive(Default)]
+pub struct BackendProcess(pub Arc<Mutex<Option<Child>>>);
 
 /// Resolve the repository `backend/` directory by walking up from the exe dir.
 fn resolve_backend_dir() -> Option<PathBuf> {
@@ -151,7 +155,14 @@ pub async fn ensure_backend(app: tauri::AppHandle) {
         eprintln!("[jarvis] backend already on :8000");
     } else {
         match spawn_backend(&app) {
-            Some(_child) => started = true,
+            Some(child) => {
+                started = true;
+                if let Some(state) = app.try_state::<BackendProcess>() {
+                    if let Ok(mut process) = state.0.lock() {
+                        *process = Some(child);
+                    }
+                }
+            }
             None => {
                 eprintln!("[jarvis] could not spawn backend - continuing in offline mode");
             }
@@ -192,6 +203,18 @@ pub async fn ensure_backend(app: tauri::AppHandle) {
             let _ = win.set_focus();
         }
         let _ = notify(&app, "JARVIS backend offline", "Could not reach the core. Check the backend.");
+    }
+}
+
+pub fn shutdown_backend(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<BackendProcess>() {
+        if let Ok(mut process) = state.0.lock() {
+            if let Some(mut child) = process.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("[jarvis] backend process stopped");
+            }
+        }
     }
 }
 

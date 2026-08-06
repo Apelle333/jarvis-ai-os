@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     blocked_commands: str = Field(default="format,del *,erase *,rmdir /s,rd /s,shutdown,restart,del /f,erase /f", description="Comma-separated list of blocked commands")
     enable_api_security: bool = Field(default=False, description="Enable API token security for backend routes")
     api_security_token: Optional[str] = Field(default=None, description="Bearer token required for protected backend routes")
+    cors_allowed_origins: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://tauri.localhost,tauri://localhost",
+        description="Comma-separated list of allowed browser origins"
+    )
 
     # Computer Control Settings
     computer_control_enabled: bool = Field(default=True, description="Enable computer control (app/window/input/file actions)")

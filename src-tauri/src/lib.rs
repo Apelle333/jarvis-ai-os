@@ -5,6 +5,7 @@ pub mod tray;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(backend::BackendProcess::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = tray::show_window(app);
         }))

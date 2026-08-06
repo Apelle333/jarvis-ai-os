@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "identifier": "com.jarvis.desktop",
   "build": {
-    "beforeDevCommand": "npm --prefix frontend run dev",
+    "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File build-frontend-dev.ps1",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "npm --prefix frontend run build",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File build-frontend.ps1",
     "frontendDist": "../frontend/out"
   },
   "app": {

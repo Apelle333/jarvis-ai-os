@@ -107,17 +107,16 @@ app.include_router(voice_router, prefix="/api/voice", tags=["voice"])
 app.include_router(system_router, prefix="/api/system", tags=["system"])
 app.include_router(websocket_router, prefix="/ws", tags=["websocket"])
 
+allowed_origins = [
+    origin.strip()
+    for origin in settings.cors_allowed_origins.split(",")
+    if origin.strip()
+]
+
 # CORS for the Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://tauri.localhost",
-        "tauri://localhost"
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
@@ -144,8 +143,11 @@ async def health_check():
     }
 
 # Mount static files (for frontend) - registered last so it does not shadow routes
+_frontend_export_dir = os.path.join(BACKEND_DIR, "..", "frontend", "out")
 _frontend_dir = os.path.join(BACKEND_DIR, "..", "frontend")
-if os.path.isdir(_frontend_dir):
+if os.path.isdir(_frontend_export_dir):
+    app.mount("/", StaticFiles(directory=_frontend_export_dir, html=True), name="static")
+elif os.path.isdir(_frontend_dir):
     app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="static")
 
 
