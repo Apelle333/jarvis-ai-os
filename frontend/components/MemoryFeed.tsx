@@ -69,8 +69,8 @@ const timeAgo = (iso?: string | null): string => {
  * deltas into a scrolling holographic log stream.
  */
 export default function MemoryFeed() {
-  const { backendUrl } = useJarvis();
-  const [memory, setMemory] = useState<MemoryStatus | null>(null);
+  const { backendUrl, memoryState } = useJarvis();
+  const [memory, setMemory] = useState<MemoryStatus | null>(memoryState ?? null);
   const [feed, setFeed] = useState<FeedEntry[]>([]);
   const seq = useRef(0);
   const prev = useRef<ShortTerm | null>(null);
@@ -89,6 +89,11 @@ export default function MemoryFeed() {
 
     const poll = async () => {
       try {
+        // If websocket provided memoryState, use it and skip HTTP poll
+        if (memoryState) {
+          setMemory(memoryState);
+          return;
+        }
         const res = await fetch(`${backendUrl}/api/system/memory`);
         if (!res.ok) throw new Error(`Backend returned ${res.status}`);
         const json: MemoryStatus = await res.json();

@@ -16,6 +16,7 @@ speaking / error states.
 import asyncio
 import base64
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -37,7 +38,10 @@ class VoicePipeline:
         self.logger = logging.getLogger(__name__)
 
     def _emit(self, client_id: str, state: str, **payload: Any) -> None:
-        """Fire a voice_state event to the requesting client (or broadcast)."""
+        """Fire a voice_state event to the requesting client (or broadcast).
+
+        state values: idle, listening, transcribing, thinking, speaking, error
+        """
         message: Dict[str, Any] = {
             "type": "voice_state",
             "state": state,
@@ -46,9 +50,8 @@ class VoicePipeline:
         message.update(payload)
 
         if client_id:
-            asyncio.create_task(
-                manager.send_personal_message(message, client_id)
-            )
+            # Fire-and-forget to avoid blocking pipeline
+            asyncio.create_task(manager.send_personal_message(message, client_id))
         else:
             asyncio.create_task(manager.broadcast(message))
 
@@ -65,53 +68,110 @@ class VoicePipeline:
             dict with ``text`` (transcription), ``response`` (brain reply),
             ``audio`` (base64 WAV bytes), and metadata.
         """
-        # Transcription (Whisper) -- long enough that the ring should pulse.
-        self._emit(client_id, "processing")
+        # Emit listening state (audio received)
+        self._emit(client_id, "listening")
 
-        text = await self.stt.transcribe(audio_bytes, language=language)
-        text = (text or "").strip()
+        # Transcription (Whisper)
+        self._emit(client_id, "transcribing")
+        text = ""
+        try:
+            stt_timeout = int(os.getenv('JARVIS_VOICE_STT_TIMEOUT', '30'))
+            text = await asyncio.wait_for(self.stt.transcribe(audio_bytes, language=language), timeout=stt_timeout)
+            text = (text or "").strip()
+        except asyncio.TimeoutError:
+            self.logger.error("STT timed out")
+            self._emit(client_id, "error", message="Transcription timed out")
+            return {
+                "text": "",
+                "response": "",
+                "audio": "",
+                "audio_mime": "audio/wav",
+                "agent": None,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {},
+                "error": "STT timeout"
+            }
+        except Exception as e:
+            self.logger.error(f"STT error: {e}")
+            self._emit(client_id, "error", message="Transcription error")
+            return {
+                "text": "",
+                "response": "",
+                "audio": "",
+                "audio_mime": "audio/wav",
+                "agent": None,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {},
+                "error": f"STT error: {e}"
+            }
 
         if not text:
             self._emit(client_id, "error", message="No speech detected")
-            raise ValueError("No speech detected in audio")
+            return {
+                "text": "",
+                "response": "",
+                "audio": "",
+                "audio_mime": "audio/wav",
+                "agent": None,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": {},
+                "error": "no_speech_detected"
+            }
 
-        self._emit(
-            client_id,
-            "processing",
-            event="transcription",
-            text=text,
-        )
+        self._emit(client_id, "processing", event="transcription", text=text)
         self.logger.info(f"Voice -> text: {text[:100]}")
 
         # Brain (main agent -> planner -> model router -> swarm).
-        result = await self.agent.process_message(
-            user_input=text,
-            modality="voice",
-        )
-        response_text = result.get("response", "")
+        self._emit(client_id, "thinking")
+        result = {}
+        response_text = ""
+        try:
+            agent_timeout = int(os.getenv('JARVIS_VOICE_AGENT_TIMEOUT', '120'))
+            result = await asyncio.wait_for(
+                self.agent.process_message(user_input=text, modality="voice"),
+                timeout=agent_timeout,
+            )
+            response_text = result.get("response", "")
+        except asyncio.TimeoutError:
+            self.logger.error("Agent processing timed out")
+            self._emit(client_id, "error", message="Agent processing timed out")
+            response_text = "Sorry, I couldn't process that right now."
+        except Exception as e:
+            self.logger.error(f"Agent error: {e}")
+            self._emit(client_id, "error", message="Agent processing error")
+            response_text = "Sorry, I couldn't process that right now."
 
         # Speech synthesis (Piper).
         self._emit(client_id, "speaking", text=response_text)
         self.logger.info("Synthesizing voice response via Piper")
 
+        audio_bytes_out = b""
         try:
-            audio_bytes_out = await self.tts.synthesize(
-                text=response_text,
-                voice=settings.tts_voice,
-                speed=settings.tts_speed,
+            tts_timeout = int(os.getenv('JARVIS_VOICE_TTS_TIMEOUT', '30'))
+            audio_bytes_out = await asyncio.wait_for(
+                self.tts.synthesize(text=response_text, voice=settings.tts_voice, speed=settings.tts_speed),
+                timeout=tts_timeout,
             )
+        except asyncio.TimeoutError:
+            self.logger.error("TTS timed out")
+            self._emit(client_id, "error", message="TTS timed out")
+            audio_bytes_out = b""
         except Exception as e:
             self.logger.error(f"TTS failed: {e}")
+            self._emit(client_id, "error", message="TTS error")
             audio_bytes_out = b""
+
+        # Done - return structured result. Emit idle state
+        self._emit(client_id, "idle")
 
         return {
             "text": text,
             "response": response_text,
             "audio": base64.b64encode(audio_bytes_out).decode("ascii"),
             "audio_mime": "audio/wav",
-            "agent": result.get("agent"),
-            "timestamp": result.get("timestamp"),
-            "metadata": result.get("metadata"),
+            "agent": result.get("agent") if isinstance(result, dict) else None,
+            "timestamp": result.get("timestamp") if isinstance(result, dict) else datetime.now().isoformat(),
+            "metadata": result.get("metadata") if isinstance(result, dict) else {},
         }
 
     async def get_status(self) -> Dict[str, Any]:

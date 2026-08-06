@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
 
 from core.personality import Personality
-from core.settings import settings
 from memory.memory_manager import MemoryManager
 
 if TYPE_CHECKING:
@@ -105,10 +105,6 @@ class SwarmManager:
             "tasks_processed": 0,
             "successful_tasks": 0,
             "failed_tasks": 0,
-            "timed_out_tasks": 0,
-            "agent_failures": 0,
-            "agent_timeouts": 0,
-            "fallbacks_used": 0,
             "average_completion_time": 0.0,
             "messages_exchanged": 0
         }
@@ -138,42 +134,97 @@ class SwarmManager:
             del self.agent_instances[agent_type.value]
             self.logger.info(f"Unregistered agent: {agent_type.value}")
 
-    async def get_agent_overview(self) -> Dict[str, Any]:
-        """Get capability and health information for registered agents."""
-        agents: List[Dict[str, Any]] = []
-        for agent_type, agent in self.agents.items():
-            initialized = bool(getattr(agent, "is_initialized", False))
-            capabilities = getattr(agent, "capabilities", None)
-            specializations = getattr(agent, "specializations", None)
-            supported_task_types = []
-            if isinstance(capabilities, list):
-                supported_task_types = capabilities
-            elif isinstance(specializations, list):
-                supported_task_types = specializations
+    async def select_agent_for_step(self, step):
+        """Select the most appropriate agent for a given TaskStep.
 
-            health_state = "healthy" if initialized else "standby"
-            if getattr(agent, "last_error", None):
-                health_state = "degraded"
+        Returns (agent_instance, agent_key, reason)
+        """
+        # Candidate agents: prefer ones whose key matches step.agent_type
+        candidates = []
+        reason = ""
+        if step.agent_type:
+            # Exact match by registered agent key
+            candidate = self.agent_instances.get(step.agent_type)
+            if candidate:
+                # Emit agent_state selected
+                try:
+                    from api.websocket import manager  # type: ignore
+                    payload = {
+                        "type": "agent_state",
+                        "data": {
+                            "agent": step.agent_type,
+                            "reason": "explicit agent_type match",
+                            "status": "selected",
+                            "step_id": step.id
+                        }
+                    }
+                    asyncio.create_task(manager.broadcast(payload))
+                except Exception:
+                    pass
+                return candidate, step.agent_type, "explicit agent_type match"
 
-            agents.append({
-                "agent_id": getattr(agent, "agent_id", agent_type.value),
-                "name": getattr(agent, "agent_name", agent_type.value),
-                "agent_type": getattr(agent, "agent_type", "specialist"),
-                "initialized": initialized,
-                "health_state": health_state,
-                "capabilities": capabilities if capabilities is not None else specializations,
-                "supported_task_types": supported_task_types,
-                "specializations": specializations,
-                "status": "ready" if initialized else "standby",
-            })
+        # Fallback: inspect agent specializations (if available) and pick the first that matches keywords
+        keywords = [w for w in re.findall(r"\w+", step.description.lower())]
 
-        active = sum(1 for a in agents if a["initialized"])
-        return {
-            "agents": agents,
-            "active": active,
-            "registered_count": len(agents),
-            "timestamp": datetime.now().isoformat(),
-        }
+        for key, agent in list(self.agent_instances.items()):
+            try:
+                status = None
+                if hasattr(agent, 'get_status'):
+                    status = await agent.get_status()
+                specializations = []
+                if isinstance(status, dict):
+                    specializations = status.get('specializations', [])
+                # Agent name/type based match
+                agent_name = getattr(agent, 'agent_name', '') or key
+                if any(k in agent_name.lower() for k in keywords):
+                    candidates.append((agent, key, 'name_match'))
+                    continue
+                if any(k in ' '.join(specializations).lower() for k in keywords):
+                    candidates.append((agent, key, 'specialization_match'))
+                    continue
+            except Exception:
+                continue
+
+        # Prefer specialization matches, then name matches
+        if candidates:
+            selected = candidates[0]
+            # broadcast selection
+            try:
+                from api.websocket import manager  # type: ignore
+                payload = {
+                    "type": "agent_state",
+                    "data": {
+                        "agent": selected[1],
+                        "reason": selected[2],
+                        "status": "selected",
+                        "step_id": step.id
+                    }
+                }
+                asyncio.create_task(manager.broadcast(payload))
+            except Exception:
+                pass
+            return selected[0], selected[1], selected[2]
+
+        # As a last resort prefer MAIN agent if available
+        main_agent = self.agent_instances.get(AgentType.MAIN.value)
+        if main_agent:
+            try:
+                from api.websocket import manager  # type: ignore
+                payload = {
+                    "type": "agent_state",
+                    "data": {
+                        "agent": AgentType.MAIN.value,
+                        "reason": "fallback_to_main",
+                        "status": "selected",
+                        "step_id": step.id
+                    }
+                }
+                asyncio.create_task(manager.broadcast(payload))
+            except Exception:
+                pass
+            return main_agent, AgentType.MAIN.value, "fallback_to_main"
+
+        return None, None, "no_agent_available"
 
     async def submit_task(
         self,
@@ -231,31 +282,36 @@ class SwarmManager:
 
         try:
             responses = []
-            failures = []
 
             for step in plan.steps:
-                agent_key = step.agent_type or AgentType.MAIN.value
-                agent = self.agent_instances.get(agent_key)
+                # Agent selection with reasoning and fallback
+                selected_agent, selected_key, selection_reason = await self.select_agent_for_step(step)
 
-                # main_agent steps re-enter the brain's process_input loop,
-                # which would cause infinite recursion. The brain is already
-                # acting as the orchestrator, so skip these steps.
-                if agent_key == AgentType.MAIN.value:
+                # main_agent steps should be skipped as orchestration is handled by brain
+                if selected_key == AgentType.MAIN.value:
                     self.logger.debug(
                         f"Skipping main_agent step '{step.id}' (orchestration already handled by brain)"
                     )
                     continue
 
-                if agent is None:
-                    warning = f"No agent registered for '{agent_key}', skipping step '{step.id}'"
-                    self.logger.warning(warning)
-                    failures.append({
-                        "step_id": step.id,
-                        "agent": agent_key,
-                        "error": warning,
-                        "error_type": "missing_agent"
-                    })
+                if selected_agent is None:
+                    self.logger.warning(
+                        f"No suitable agent found for step '{step.id}', skipping"
+                    )
                     continue
+
+                # Record last agent selection to the brain for observability
+                try:
+                    if self.brain is not None:
+                        self.brain.last_agent_selection = {
+                            "task_id": getattr(plan, 'request_id', None),
+                            "step_id": step.id,
+                            "agent_key": selected_key,
+                            "reason": selection_reason,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                except Exception:
+                    pass
 
                 context = {
                     "step_id": step.id,
@@ -263,42 +319,39 @@ class SwarmManager:
                     "swarm_context": True
                 }
 
-                result = await self._execute_agent_with_timeout(
-                    agent=agent,
-                    request=plan.original_request,
-                    context=context,
-                    timeout_seconds=self._get_step_timeout(step)
-                )
+                if hasattr(selected_agent, "process_request"):
+                    result = await selected_agent.process_request(
+                        request=plan.original_request,
+                        context=context
+                    )
+                elif hasattr(selected_agent, "process_message"):
+                    result = await selected_agent.process_message(
+                        user_input=plan.original_request,
+                        modality="text",
+                        context=context
+                    )
+                else:
+                    self.logger.warning(
+                        f"Agent '{selected_key}' has no process_request/process_message"
+                    )
+                    continue
 
                 if isinstance(result, dict):
                     response_text = result.get("response", "")
                     if response_text:
                         responses.append(response_text)
                     if result.get("error"):
-                        failures.append({
-                            "step_id": step.id,
-                            "agent": agent_key,
-                            "error": result.get("error") or result.get("error_type"),
-                            "error_type": result.get("error_type", "unknown"),
-                            "timeout": result.get("timeout", False)
-                        })
                         self.logger.error(
-                            f"Step '{step.id}' via '{agent_key}' failed: {result.get('error')}"
+                            f"Step '{step.id}' via '{selected_key}' failed: {response_text}"
                         )
                 else:
                     responses.append(str(result))
 
-            if responses and not failures:
+            if responses:
                 return "\n\n".join(responses)
-
-            if responses and failures:
-                summary = "\n\n".join(responses)
-                summary += "\n\n[Note: some agent steps completed successfully while others failed.]"
-                return summary
 
             # Fallback: use the brain's model router with the plan prompt
             if self.brain is not None:
-                self.metrics["fallbacks_used"] += 1
                 model_selection = await self.brain.model_router.select_model(
                     task_type=plan.task_type,
                     complexity=plan.complexity,
@@ -365,34 +418,49 @@ class SwarmManager:
         try:
             self.logger.info(f"Executing task {task.task_id}: {task.description}")
 
+            # Broadcast task start
+            try:
+                from api.websocket import manager  # type: ignore
+                asyncio.create_task(manager.broadcast({
+                    "type": "agent_state",
+                    "data": {
+                        "agent": task.required_agents[0].value if task.required_agents else None,
+                        "task_id": task.task_id,
+                        "status": "started",
+                        "description": task.description
+                    }
+                }))
+            except Exception:
+                pass
+
             # Check if all required agents are available
             missing_agents = [agent for agent in task.required_agents if agent not in self.agents]
             if missing_agents:
                 raise Exception(f"Missing required agents: {[a.value for a in missing_agents]}")
 
+            # For now, we'll execute tasks sequentially with the first available agent
+            # In a more sophisticated implementation, we'd distribute subtasks
             primary_agent_type = task.required_agents[0]
             agent = self.agents[primary_agent_type]
 
-            result = await self._execute_agent_with_timeout(
-                agent=agent,
+            # Execute the task using the agent
+            result = await agent.process_request(
                 request=task.description,
-                context={"task_id": task.task_id, "swarm_context": True},
-                timeout_seconds=getattr(self.brain.settings, "task_timeout", 300)
+                context={"task_id": task.task_id, "swarm_context": True}
             )
 
+            # Store result
             task.results = {
                 "agent_used": primary_agent_type.value,
                 "response": result.get("response", ""),
                 "metadata": result.get("metadata", {}),
-                "success": not result.get("error", False),
-                "error_type": result.get("error_type"),
-                "timeout": result.get("timeout", False),
-                "error": result.get("error")
+                "success": not result.get("error", False)
             }
 
             task.status = "completed" if task.results["success"] else "failed"
             task.completed_at = datetime.now()
 
+            # Move to appropriate collection
             if task.status == "completed":
                 self.completed_tasks[task.task_id] = task
                 self.metrics["successful_tasks"] += 1
@@ -402,11 +470,27 @@ class SwarmManager:
 
             self.metrics["tasks_processed"] += 1
 
+            # Calculate average completion time
             completion_time = (task.completed_at - start_time).total_seconds()
             total_time = self.metrics["average_completion_time"] * (self.metrics["tasks_processed"] - 1) + completion_time
             self.metrics["average_completion_time"] = total_time / self.metrics["tasks_processed"]
 
             self.logger.info(f"Completed task {task.task_id} with status: {task.status}")
+            # Broadcast task completion
+            try:
+                from api.websocket import manager  # type: ignore
+                asyncio.create_task(manager.broadcast({
+                    "type": "agent_state",
+                    "data": {
+                        "agent": task.results.get("agent_used") if task.results else None,
+                        "task_id": task.task_id,
+                        "status": "completed" if task.status == "completed" else "failed",
+                        "success": task.results.get("success") if task.results else None,
+                        "result": task.results
+                    }
+                }))
+            except Exception:
+                pass
 
         except Exception as e:
             self.logger.error(f"Error executing task {task.task_id}: {e}", exc_info=True)
@@ -414,14 +498,14 @@ class SwarmManager:
             task.completed_at = datetime.now()
             task.results = {
                 "error": str(e),
-                "success": False,
-                "error_type": "exception"
+                "success": False
             }
             self.failed_tasks[task.task_id] = task
             self.metrics["failed_tasks"] += 1
             self.metrics["tasks_processed"] += 1
 
         finally:
+            # Remove from active tasks
             if task.task_id in self.active_tasks:
                 del self.active_tasks[task.task_id]
 
@@ -475,20 +559,6 @@ class SwarmManager:
 
     async def get_swarm_status(self) -> Dict[str, Any]:
         """Get overall status of the swarm"""
-        agent_statuses = {}
-        for agent_type, agent in self.agents.items():
-            if hasattr(agent, 'get_status'):
-                try:
-                    agent_statuses[agent_type.value] = await agent.get_status()
-                except Exception as e:
-                    agent_statuses[agent_type.value] = {
-                        "agent_id": getattr(agent, "agent_id", agent_type.value),
-                        "status": "error",
-                        "error": str(e)
-                    }
-            else:
-                agent_statuses[agent_type.value] = {"status": "unknown"}
-
         return {
             "initialized": self.is_initialized,
             "registered_agents": [agent_type.value for agent_type in self.agents.keys()],
@@ -497,8 +567,11 @@ class SwarmManager:
             "completed_tasks": len(self.completed_tasks),
             "failed_tasks": len(self.failed_tasks),
             "metrics": self.metrics.copy(),
-            "agents_status": agent_statuses,
-            "agent_overview": await self.get_agent_overview(),
+            "agents_status": {
+                agent_type.value: await agent.get_status()
+                if hasattr(agent, 'get_status') else {"status": "unknown"}
+                for agent_type, agent in self.agents.items()
+            }
         }
 
     async def shutdown(self):
@@ -510,53 +583,3 @@ class SwarmManager:
         for agent in self.agents.values():
             if hasattr(agent, 'shutdown'):
                 await agent.shutdown()
-
-    def _get_step_timeout(self, step: SwarmTask) -> int:
-        """Resolve a safe timeout value for a step."""
-        configured_timeout = getattr(self.brain.settings, "task_timeout", 300)
-        if getattr(step, "estimated_time", 0):
-            estimated_timeout = max(15, int(step.estimated_time * 2))
-            return min(configured_timeout, estimated_timeout)
-        return configured_timeout
-
-    async def _execute_agent_with_timeout(
-        self,
-        agent: Any,
-        request: str,
-        context: Dict[str, Any],
-        timeout_seconds: int,
-    ) -> Dict[str, Any]:
-        """Execute an agent call with timeout isolation."""
-        try:
-            if hasattr(agent, "process_request"):
-                coro = agent.process_request(request=request, context=context)
-            elif hasattr(agent, "process_message"):
-                coro = agent.process_message(user_input=request, modality="text", context=context)
-            else:
-                raise AttributeError("Agent has no process_request or process_message method")
-
-            result = await asyncio.wait_for(coro, timeout_seconds)
-            return result if isinstance(result, dict) else {"response": str(result), "error": False}
-
-        except asyncio.TimeoutError:
-            self.metrics["timed_out_tasks"] += 1
-            self.metrics["agent_timeouts"] += 1
-            return {
-                "response": "",
-                "error": True,
-                "error_type": "timeout",
-                "timeout": True,
-                "agent": getattr(agent, "agent_id", None),
-                "message": f"Agent timed out after {timeout_seconds} seconds."
-            }
-        except Exception as e:
-            self.metrics["agent_failures"] += 1
-            return {
-                "response": "",
-                "error": True,
-                "error_type": "exception",
-                "timeout": False,
-                "agent": getattr(agent, "agent_id", None),
-                "error": str(e),
-                "message": str(e)
-            }

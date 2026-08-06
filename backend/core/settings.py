@@ -22,9 +22,28 @@ class Settings(BaseSettings):
     ollama_timeout: int = Field(default=120, description="Ollama request timeout in seconds")
 
     # Model Configuration
-    default_model: str = Field(default="gemma:7b", description="Default model for general tasks")
+    default_model: str = Field(default="qwen3:8b", description="Default model for general tasks")
     coder_model: str = Field(default="qwen2.5-coder:7b", description="Model for coding tasks")
-    reasoning_model: str = Field(default="qwen2.5:72b", description="Model for complex reasoning")
+    reasoning_model: str = Field(default="deepseek-r1:14b", description="Model for complex reasoning")
+
+    # Explicit routing preferences (primary and fallback). These are used by ModelRouter.
+    reasoning_primary: str = Field(default="deepseek-r1:14b")
+    reasoning_fallback: str = Field(default="qwen3:8b")
+
+    coding_primary: str = Field(default="qwen2.5-coder:7b")
+    coding_fallback: str = Field(default="deepseek-r1:14b")
+
+    general_primary: str = Field(default="qwen3:8b")
+    general_fallback: str = Field(default="gemma4:12b")
+
+    personality_primary: str = Field(default="gemma4:12b")
+    personality_fallback: str = Field(default="qwen3:8b")
+
+    fast_primary: str = Field(default="phi4-mini:latest")
+
+    emergency_fallback: str = Field(default="qwen3:8b")
+
+    last_resort_model: str = Field(default="gemma:7b")
 
     # Memory Configuration
     sqlite_db_path: str = Field(default="./database/jarvis_memory.db", description="SQLite database path")

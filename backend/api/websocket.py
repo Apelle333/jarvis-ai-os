@@ -245,12 +245,35 @@ async def system_snapshot_broadcast_loop(brain, interval: float = 3.0):
                 continue
             try:
                 si = brain.system_intelligence
+                snapshot = await si.get_live_snapshot()
                 payload = {
                     "type": "system_snapshot",
-                    "snapshot": await si.get_live_snapshot(),
+                    "snapshot": snapshot,
                     "timestamp": datetime.now().isoformat()
                 }
                 await manager.broadcast(payload)
+
+                # Also emit memory_state and system_state and model/agent snapshots separately for HUD ease
+                try:
+                    memory_status = await si.get_memory_status()
+                    await manager.broadcast({
+                        "type": "memory_state",
+                        "data": memory_status,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                except Exception:
+                    pass
+
+                try:
+                    system_status = await si.get_system_status()
+                    await manager.broadcast({
+                        "type": "system_state",
+                        "data": system_status,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                except Exception:
+                    pass
+
             except Exception as e:
                 logger.error(f"Error broadcasting system snapshot: {e}")
     except asyncio.CancelledError:

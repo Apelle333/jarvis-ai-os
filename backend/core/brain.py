@@ -4,7 +4,7 @@ Main intelligence system that coordinates all components
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 from enum import Enum
 
@@ -37,13 +37,6 @@ class SystemState(str, Enum):
     ERROR = "error"
 
 
-class CoreStatus(str, Enum):
-    """Runtime core readiness states"""
-    READY = "ready"
-    DEGRADED = "degraded"
-    UNAVAILABLE = "unavailable"
-
-
 class JARVIS_Brain:
     """
     Central intelligence system of JARVIS
@@ -63,23 +56,11 @@ class JARVIS_Brain:
         self.system_intelligence = SystemIntelligence(brain=self)
         self.system_agent: Optional[SystemAgent] = None
 
-        self.is_initialized = False
-        self.is_shutting_down = False
-        self.core_status = CoreStatus.UNAVAILABLE
-        self.core_status_reasons: List[str] = []
-        self.core_component_health: Dict[str, Any] = {}
-
-        self.startup_metrics = {
-            "initialization_time_ms": 0.0,
-            "component_timings_ms": {},
-            "startup_failures": [],
-        }
-        self.runtime_metrics = {
-            "active_requests": 0,
-            "total_requests": 0,
-            "generation_requests": 0,
-            "latest_task_queue_length": 0,
-        }
+        # Observability metadata for runtime intelligence
+        self.last_plan = None
+        self.last_model_selection = None
+        self.last_agent_selection = None
+        self.recent_decisions: list = []
 
         self.logger = logging.getLogger(__name__)
 
@@ -92,40 +73,16 @@ class JARVIS_Brain:
 
     async def initialize(self):
         """Initialize all components"""
-        if self.is_initialized:
-            self.logger.info("JARVIS Brain already initialized")
-            return
-
         try:
             self.logger.info("Initializing JARVIS components...")
-            init_start = datetime.now()
 
             # Initialize memory
-            memory_start = datetime.now()
-            try:
-                await self.memory_manager.initialize()
-            except Exception as memory_error:
-                self._record_startup_failure("memory_manager", memory_error)
-                raise
-            finally:
-                self._record_component_timing("memory_manager", memory_start)
+            await self.memory_manager.initialize()
 
             # Initialize system monitor
-            monitor_start = datetime.now()
-            try:
-                await self.system_monitor.initialize()
-                await self.system_monitor.start()
-            except Exception as monitor_error:
-                self._record_startup_failure("system_monitor", monitor_error)
-                self.logger.warning(
-                    "System Monitor failed to start (continuing without it): %s",
-                    monitor_error,
-                )
-            finally:
-                self._record_component_timing("system_monitor", monitor_start)
+            await self.system_monitor.start()
 
             # Check Ollama models (degrade gracefully if Ollama is unavailable)
-            model_availability_start = datetime.now()
             try:
                 models = [
                     self.settings.default_model,
@@ -133,62 +90,31 @@ class JARVIS_Brain:
                     self.settings.reasoning_model
                 ]
 
-                missing_models = []
                 for model in models:
-                    available = await self.model_router.is_model_available(model)
-                    if not available:
-                        missing_models.append(model)
-
-                if missing_models:
-                    # Log missing models but do NOT auto-pull them. Pulling
-                    # multi-GB models during startup can block and consume
-                    # resources; preserve manual model management instead.
-                    self.logger.warning(
-                        "Ollama models missing: %s. Not auto-pulling during startup.",
-                        ", ".join(missing_models),
-                    )
+                    if not await self.model_router.is_model_available(model):
+                        self.logger.warning(
+                            f"Model {model} not available. Pulling..."
+                        )
+                        try:
+                            await self.model_router.pull_model(model)
+                        except Exception as pull_error:
+                            self.logger.error(
+                                f"Failed to pull model {model}: {pull_error}"
+                            )
             except Exception as model_error:
-                self._record_startup_failure("ollama_availability_check", model_error)
                 self.logger.error(
                     "Ollama model verification failed "
                     f"(continuing without it): {model_error}"
                 )
-            finally:
-                self._record_component_timing("ollama_availability_check", model_availability_start)
 
             # Initialize personality
-            personality_start = datetime.now()
-            try:
-                await self.personality.initialize()
-            except Exception as personality_error:
-                self._record_startup_failure("personality", personality_error)
-                raise
-            finally:
-                self._record_component_timing("personality", personality_start)
+            await self.personality.initialize()
 
             # Register specialist agents with the swarm
-            agent_errors: List[str] = []
-            agents_start = datetime.now()
-            try:
-                await self._register_agents()
-            except Exception as agent_error:
-                agent_errors.append(str(agent_error))
-                self._record_startup_failure("agent_registration", agent_error)
-                self.logger.warning(
-                    "Agent registration incomplete (continuing in degraded mode): %s",
-                    agent_error,
-                )
-            finally:
-                self._record_component_timing("agent_registration", agents_start)
+            await self._register_agents()
 
-            self.is_initialized = True
-            self._evaluate_core_status(agent_errors=agent_errors)
-            self.startup_metrics["initialization_time_ms"] = (
-                datetime.now() - init_start
-            ).total_seconds() * 1000.0
             self.logger.info(
-                "JARVIS Brain initialized successfully | metrics=%s",
-                self.startup_metrics,
+                "JARVIS Brain initialized successfully"
             )
 
         except Exception as e:
@@ -197,8 +123,6 @@ class JARVIS_Brain:
                 exc_info=True
             )
             self.state = SystemState.ERROR
-            self.core_status = CoreStatus.UNAVAILABLE
-            self.core_status_reasons = [str(e)]
             raise
 
 
@@ -221,138 +145,16 @@ class JARVIS_Brain:
             f"Registered {len(agent_instances)} agents with the swarm"
         )
 
-    def _record_component_timing(self, component_name: str, start_time: datetime) -> None:
-        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000.0
-        self.startup_metrics["component_timings_ms"][component_name] = elapsed_ms
-
-    def _record_startup_failure(self, component_name: str, error: Exception) -> None:
-        self.startup_metrics["startup_failures"].append({
-            "component": component_name,
-            "error": str(error),
-            "timestamp": datetime.now().isoformat(),
-        })
-
-    def _collect_core_health(self) -> Dict[str, Any]:
-        """Collect health information for core subcomponents."""
-        health: Dict[str, Any] = {}
-
-        sqlite_ok = bool(
-            self.memory_manager.sqlite_memory is not None
-            and getattr(self.memory_manager.sqlite_memory, "is_initialized", False)
-        )
-        health["sqlite_memory"] = {
-            "available": sqlite_ok,
-            "detail": "initialized" if sqlite_ok else "unavailable",
-        }
-
-        vector_ok = bool(
-            self.memory_manager.vector_memory is not None
-            and getattr(self.memory_manager.vector_memory, "is_initialized", False)
-        )
-        health["vector_memory"] = {
-            "available": vector_ok,
-            "detail": "initialized" if vector_ok else "unavailable",
-        }
-
-        monitor_ok = bool(
-            self.system_monitor is not None
-            and getattr(self.system_monitor, "is_initialized", False)
-        )
-        health["system_monitor"] = {
-            "available": monitor_ok,
-            "detail": "running" if monitor_ok else "unavailable",
-        }
-
-        available_models = getattr(self.model_router, "available_models", {})
-        model_names = [name for name, ok in available_models.items() if ok]
-        missing_models = [name for name, ok in available_models.items() if not ok]
-        health["ollama"] = {
-            "available": bool(model_names),
-            "available_models": model_names,
-            "missing_models": missing_models,
-            "detail": (
-                "models available" if model_names else "no configured models available"
-            ),
-        }
-
-        registered_agents = len(self.swarm_manager.agents)
-        expected_agents = len(AgentType)
-        health["agent_registration"] = {
-            "available": registered_agents == expected_agents,
-            "registered_count": registered_agents,
-            "expected_count": expected_agents,
-            "detail": (
-                "all agents registered"
-                if registered_agents == expected_agents
-                else "partial agent registration"
-            ),
-        }
-
-        return health
-
-    def _evaluate_core_status(self, agent_errors: Optional[List[str]] = None) -> None:
-        """Evaluate the core runtime status after initialization."""
-        health = self._collect_core_health()
-        self.core_component_health = health
-
-        reasons: List[str] = []
-        if agent_errors:
-            reasons.extend(agent_errors)
-
-        if not health["sqlite_memory"]["available"]:
-            self.core_status = CoreStatus.UNAVAILABLE
-            reasons.append("SQLite memory unavailable")
-        else:
-            if not health["system_monitor"]["available"]:
-                reasons.append("System Monitor unavailable")
-            if not health["vector_memory"]["available"]:
-                reasons.append("Vector memory unavailable")
-            if not health["ollama"]["available"]:
-                reasons.append("Ollama models unavailable")
-            if not health["agent_registration"]["available"]:
-                reasons.append("Agent registration incomplete")
-
-            self.core_status = CoreStatus.DEGRADED if reasons else CoreStatus.READY
-
-        self.core_status_reasons = reasons
 
     async def shutdown(self):
         """Shutdown all components gracefully"""
-        if self.is_shutting_down:
-            self.logger.info("JARVIS Brain shutdown already in progress")
-            return
-
-        self.is_shutting_down = True
         try:
             self.logger.info("Shutting down JARVIS components...")
 
-            try:
-                await self.system_monitor.stop()
-            except Exception as monitor_error:
-                self.logger.warning(
-                    "System Monitor shutdown failed: %s",
-                    monitor_error,
-                )
+            await self.system_monitor.stop()
+            await self.memory_manager.shutdown()
+            await self.model_router.cleanup()
 
-            try:
-                await self.memory_manager.shutdown()
-            except Exception as memory_error:
-                self.logger.warning(
-                    "Memory Manager shutdown failed: %s",
-                    memory_error,
-                )
-
-            try:
-                await self.model_router.cleanup()
-            except Exception as router_error:
-                self.logger.warning(
-                    "Model Router cleanup failed: %s",
-                    router_error,
-                )
-
-            self.is_initialized = False
-            self.core_status = CoreStatus.UNAVAILABLE
-            self.core_status_reasons = ["shutdown"]
             self.logger.info(
                 "JARVIS Brain shutdown complete"
             )
@@ -361,8 +163,6 @@ class JARVIS_Brain:
             self.logger.error(
                 f"Error during shutdown: {e}"
             )
-        finally:
-            self.is_shutting_down = False
 
 
     async def process_input(
@@ -372,8 +172,6 @@ class JARVIS_Brain:
     ) -> str:
 
         self.request_count += 1
-        self.runtime_metrics["total_requests"] += 1
-        self.runtime_metrics["active_requests"] += 1
         self.state = SystemState.PROCESSING
 
         try:
@@ -433,11 +231,23 @@ class JARVIS_Brain:
                 personality_state=await self.personality.get_current_state()
             )
 
+            # Persist plan for observability
+            self.last_plan = plan
+
             model_selection = await self.model_router.select_model(
                 task_type=plan.task_type,
                 complexity=plan.complexity,
                 context=context
             )
+
+            # Persist model selection metadata for diagnostics
+            self.last_model_selection = {
+                "model": model_selection.model,
+                "reason": model_selection.reason,
+                "temperature": model_selection.temperature,
+                "max_tokens": model_selection.max_tokens,
+                "confidence": getattr(model_selection, 'confidence', None)
+            }
 
             if plan.task_type == TaskType.SYSTEM_ANALYSIS:
                 result = await self._handle_system_analysis(
@@ -484,14 +294,6 @@ class JARVIS_Brain:
             )
 
             return await self.personality.handle_error(str(e))
-
-        finally:
-            self.runtime_metrics["active_requests"] = max(
-                0, self.runtime_metrics["active_requests"] - 1
-            )
-            self.runtime_metrics["latest_task_queue_length"] = len(
-                self.swarm_manager.task_queue
-            )
 
 
     async def _handle_system_analysis(
@@ -683,12 +485,7 @@ class JARVIS_Brain:
             "error_count": self.error_count,
             "memory_stats": await self.memory_manager.get_stats(),
             "system_stats": await self.system_monitor.get_current_stats(),
-            "model_info": await self.model_router.get_available_models(),
-            "core_status": self.core_status.value,
-            "core_reasons": self.core_status_reasons,
-            "component_health": self.core_component_health,
-            "startup_metrics": self.startup_metrics,
-            "runtime_metrics": self.runtime_metrics,
+            "model_info": await self.model_router.get_available_models()
         }
 
 

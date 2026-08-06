@@ -23,7 +23,7 @@ const formatUptime = (seconds: number): string => {
 };
 
 export default function SystemPanel() {
-  const { backendUrl, backendOnline } = useJarvis();
+  const { backendUrl, backendOnline, status } = useJarvis();
   const [systemInfo, setSystemInfo] = useState<SystemInfo>({
     cpu: 0,
     memory: 0,
@@ -40,6 +40,24 @@ export default function SystemPanel() {
   useEffect(() => {
     const fetchSystemStats = async () => {
       try {
+        // Prefer lightweight status from context when available (fast, offline-friendly)
+        if (status && status.brain) {
+          const brain = status.brain as any;
+          setSystemInfo({
+            cpu: Math.round((brain?.system_stats?.data?.cpu?.usage ?? 0)),
+            memory: Math.round((brain?.system_stats?.data?.memory?.percent ?? 0)),
+            disk: Math.round((brain?.system_stats?.data?.disk?.percent ?? 0)),
+            uptime: formatUptime(brain?.uptime_seconds ?? 0),
+            temperature: null,
+            network: {
+              upload: 0,
+              download: 0
+            }
+          });
+          setError(false);
+          return;
+        }
+
         const res = await fetch(`${backendUrl}/api/chat/status`);
         if (!res.ok) throw new Error(`Backend returned ${res.status}`);
         const data = await res.json();
@@ -69,10 +87,10 @@ export default function SystemPanel() {
     const interval = setInterval(fetchSystemStats, 5000);
 
     return () => clearInterval(interval);
-  }, [backendUrl]);
+  }, [backendUrl, status]);
 
   return (
-    <div className="glass-card p-4 rounded-lg space-y-4">
+    <div className="glass-card p-4 rounded-lg space-y-4" style={{ background: 'linear-gradient(180deg, rgba(10,14,20,0.6), rgba(6,8,12,0.35))', backdropFilter: 'blur(8px)' }}>
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-lg font-semibold text-jarvis-800 dark:text-jarvis-200">System Status</h3>
         <div className="flex items-center space-x-2">

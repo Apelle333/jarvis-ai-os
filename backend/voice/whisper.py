@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, Any, Optional, List
 import av
 import whisper
+from datetime import datetime
 
 from core.settings import settings
 
@@ -26,6 +27,8 @@ class WhisperSTT:
         self.is_initialized = False
         self.model = None
         self.model_name = settings.speech_recognition_model or "base"  # Default model
+        self.last_error: Optional[str] = None
+        self.last_transcription_time: Optional[datetime] = None
         self.supported_languages = {
             "en": "english",
             "es": "spanish",
@@ -126,8 +129,6 @@ class WhisperSTT:
                 return ""
 
             # Transcribe in a thread to avoid blocking.
-            # Passing a numpy array (instead of a file path) keeps decoding
-            # in-process and never invokes the ffmpeg CLI.
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None,
@@ -138,13 +139,17 @@ class WhisperSTT:
                 )
             )
 
-            text = result["text"].strip()
+            text = (result.get("text") or "").strip()
+            self.last_error = None
+            self.last_transcription_time = datetime.now()
             self.logger.info(f"Transcribed audio: {text[:100]}...")
             return text
 
         except Exception as e:
+            # Do not raise - return empty transcription on failure and record error
+            self.last_error = str(e)
             self.logger.error(f"Error transcribing audio: {e}", exc_info=True)
-            raise
+            return ""
 
     async def detect_language(self, audio_data: bytes) -> Dict[str, Any]:
         """
@@ -191,8 +196,9 @@ class WhisperSTT:
             }
 
         except Exception as e:
+            self.last_error = str(e)
             self.logger.error(f"Error detecting language: {e}", exc_info=True)
-            raise
+            return {"language": "unknown", "language_probability": 0.0, "is_reliable": False, "error": str(e)}
 
     async def get_available_models(self) -> List[str]:
         """Get list of available Whisper models"""

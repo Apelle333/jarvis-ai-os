@@ -67,7 +67,7 @@ export default function SystemHUD() {
       transition={{ duration: 0.7, ease: 'easeOut' }}
       className="fixed left-4 top-1/2 -translate-y-1/2 z-30 w-52 hidden md:block"
     >
-      <div className="hud-panel p-4">
+      <div className="hud-panel p-4" style={{ background: 'linear-gradient(180deg, rgba(6,8,12,0.6), rgba(3,6,12,0.45))', backdropFilter: 'blur(8px)' }}>
         <div className="flex items-center justify-between mb-3">
           <h2 className="hud-panel-title">SYSTEM</h2>
           <span className={`hud-state-dot ${snapError ? 'hud-dot-off' : 'hud-dot-on'}`} />
@@ -83,6 +83,24 @@ export default function SystemHUD() {
         </div>
 
         <div className="my-3 hud-divider" />
+
+        {/* Planner / Model quick view */}
+        {snap?.planner && (
+          <div className="mb-3">
+            <div className="flex justify-between items-baseline mb-1">
+              <span className="hud-label">TASK</span>
+              <span className="hud-value text-[10px] truncate">{snap.planner.last_plan_id ?? '—'}</span>
+            </div>
+            <div className="flex justify-between items-baseline mb-1">
+              <span className="hud-label">INTENT</span>
+              <span className="hud-value text-[10px]">{snap.planner.last_task_type ?? '—'}</span>
+            </div>
+            <div className="flex justify-between items-baseline">
+              <span className="hud-label">CONF</span>
+              <span className="hud-value text-[10px]">{(snap.planner.last_plan_confidence ?? 0).toString()}</span>
+            </div>
+          </div>
+        )}
 
         <Meter label="CPU" value={snap?.cpu_percent ?? 0} />
         <Meter label="RAM" value={snap?.memory_percent ?? 0} />

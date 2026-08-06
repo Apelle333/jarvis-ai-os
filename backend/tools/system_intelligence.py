@@ -487,26 +487,19 @@ class SystemIntelligence:
 
         for agent_type, agent in swarm.agents.items():
             initialized = bool(getattr(agent, "is_initialized", False))
-            capabilities = getattr(agent, "capabilities", None)
-            specializations = getattr(agent, "specializations", None)
             entry = {
                 "agent_id": getattr(agent, "agent_id", str(agent_type)),
                 "name": getattr(agent, "agent_name", str(agent_type)),
                 "agent_type": getattr(agent, "agent_type", "specialist"),
                 "status": ONLINE,
                 "initialized": initialized,
-                "capabilities": capabilities,
-                "specializations": specializations,
                 "detail": "registered and initialized" if initialized else "registered, ready on first use",
             }
             try:
                 if hasattr(agent, "get_status"):
                     status_info = await agent.get_status()
                     if isinstance(status_info, dict):
-                        if "specializations" in status_info:
-                            entry["specializations"] = status_info.get("specializations", [])
-                        if "capabilities" in status_info:
-                            entry["capabilities"] = status_info.get("capabilities", [])
+                        entry["specializations"] = status_info.get("specializations", [])
             except Exception as e:
                 entry["status"] = ERROR
                 entry["detail"] = str(e)[:80]
@@ -516,75 +509,6 @@ class SystemIntelligence:
         return {
             "agents": agents,
             "active": active,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-    def _collect_capabilities(self) -> Dict[str, Any]:
-        """Collect capability summary from core components."""
-        if self.brain is None:
-            return {
-                "models": [],
-                "agents": [],
-                "memory_backends": {},
-                "voice": {},
-            }
-
-        model_router = self.brain.model_router
-        available_models = [
-            model for model, ok in getattr(model_router, "available_models", {}).items() if ok
-        ]
-        agent_capabilities = []
-        swarm = self.brain.swarm_manager
-        if swarm is not None:
-            for _, agent in getattr(swarm, "agents", {}).items():
-                agent_capabilities.append({
-                    "name": getattr(agent, "agent_name", str(type(agent).__name__)),
-                    "capabilities": getattr(agent, "capabilities", []),
-                })
-
-        memory_manager = self.brain.memory_manager
-        memory_backends = {
-            "sqlite": bool(
-                memory_manager is not None
-                and getattr(memory_manager, "sqlite_memory", None) is not None
-                and getattr(memory_manager.sqlite_memory, "is_initialized", False)
-            ),
-            "vector": bool(
-                memory_manager is not None
-                and getattr(memory_manager, "vector_memory", None) is not None
-                and getattr(memory_manager.vector_memory, "is_initialized", False)
-            ),
-        }
-
-        voice = {
-            "speech_to_text": hasattr(self.brain, "settings") and getattr(self.brain.settings, "whisper_enabled", False),
-            "text_to_speech": hasattr(self.brain, "settings") and getattr(self.brain.settings, "piper_enabled", False),
-        }
-
-        return {
-            "models": available_models,
-            "agents": agent_capabilities,
-            "memory_backends": memory_backends,
-            "voice": voice,
-        }
-
-    # ------------------------------------------------------------------
-    # Core health and runtime status
-    # ------------------------------------------------------------------
-
-    async def get_core_status(self) -> Dict[str, Any]:
-        """Get the runtime core status and degraded reasons."""
-        if self.brain is None:
-            return {
-                "state": "unavailable",
-                "reasons": ["brain instance missing"],
-                "components": {},
-            }
-
-        return {
-            "state": self.brain.core_status.value,
-            "reasons": self.brain.core_status_reasons,
-            "components": self.brain.core_component_health,
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -603,10 +527,36 @@ class SystemIntelligence:
             self.logger.error(f"Error getting memory stats: {e}")
             stats = {"error": str(e)}
 
+        # Compute additional indicators
+        short_term = stats.get("short_term", {})
+        long_term = stats.get("long_term", {})
+        archive_counts = stats.get("archive_counts", {})
+
+        prune_needed = False
+        try:
+            active_conv = int(short_term.get("conversations_active", 0))
+            limit = getattr(self.brain.memory_manager, "short_term_limit", None)
+            if limit is not None and active_conv > int(limit):
+                prune_needed = True
+        except Exception:
+            prune_needed = False
+
+        chroma_available = bool(stats.get("chroma_available", True))
+        vector_fallback = False
+        try:
+            if not chroma_available and int(stats.get("vector_fallback_count", 0)) > 0:
+                vector_fallback = True
+        except Exception:
+            vector_fallback = False
+
         return {
             "is_initialized": bool(getattr(self.brain.memory_manager, "is_initialized", False)),
-            "short_term": stats.get("short_term", {}),
-            "long_term": stats.get("long_term", {}),
+            "short_term": short_term,
+            "long_term": long_term,
+            "archive_counts": archive_counts,
+            "prune_needed": prune_needed,
+            "chroma_available": chroma_available,
+            "vector_fallback": vector_fallback,
             "last_consolidation": stats.get("last_consolidation"),
             "timestamp": datetime.now().isoformat(),
         }
@@ -665,14 +615,57 @@ class SystemIntelligence:
         status["hardware"] = await self.get_hardware_info()
         status["agents"] = await self.get_agent_status()
         status["memory"] = await self.get_memory_status()
-        status["core"] = await self.get_core_status()
-        status["startup_metrics"] = getattr(self.brain, "startup_metrics", {}) if self.brain else {}
-        status["runtime_metrics"] = getattr(self.brain, "runtime_metrics", {}) if self.brain else {}
-        status["model_metrics"] = getattr(self.brain.model_router, "runtime_metrics", {}) if self.brain and getattr(self.brain, "model_router", None) else {}
-        status["capabilities"] = self._collect_capabilities()
+        status["voice"] = await self.get_voice_status()
         status["timestamp"] = datetime.now().isoformat()
 
         return status
+
+    async def get_voice_status(self) -> Dict[str, Any]:
+        """Get voice system status (STT/TTS) by inspecting api.voice singletons when available."""
+        try:
+            try:
+                from api import voice as voice_api  # type: ignore
+            except Exception:
+                voice_api = None
+
+            stt_status = {"status": "unavailable"}
+            tts_status = {"status": "unavailable"}
+
+            if voice_api is not None:
+                whisper = getattr(voice_api, 'whisper_stt', None)
+                piper = getattr(voice_api, 'piper_tts', None)
+                # If singletons not created, try to get them through getters
+                if whisper is None and hasattr(voice_api, 'get_stt'):
+                    try:
+                        whisper = voice_api.get_stt()
+                    except Exception:
+                        whisper = None
+                if piper is None and hasattr(voice_api, 'get_tts'):
+                    try:
+                        piper = voice_api.get_tts()
+                    except Exception:
+                        piper = None
+
+                if whisper is not None and hasattr(whisper, 'get_status'):
+                    try:
+                        stt_status = await whisper.get_status()
+                    except Exception as e:
+                        stt_status = {"status": "error", "error": str(e)}
+
+                if piper is not None and hasattr(piper, 'get_status'):
+                    try:
+                        tts_status = await piper.get_status()
+                    except Exception as e:
+                        tts_status = {"status": "error", "error": str(e)}
+
+            return {
+                "speech_to_text": stt_status,
+                "text_to_speech": tts_status,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve voice status: {e}")
+            return {"error": str(e)}
 
     # ------------------------------------------------------------------
     # System scans (memory integration)
@@ -748,7 +741,7 @@ class SystemIntelligence:
         if gpu.get("available") and gpu.get("gpus"):
             gpu_summary = gpu["gpus"][0]
 
-        return {
+        snapshot = {
             "brain_state": brain_state,
             "request_count": request_count,
             "error_count": error_count,
@@ -760,3 +753,25 @@ class SystemIntelligence:
             "processes_total": data.get("processes", {}).get("total", 0),
             "timestamp": datetime.now().isoformat(),
         }
+
+        # Planner / decision metadata (best-effort)
+        try:
+            brain = self.brain
+            if brain is not None:
+                last_plan = getattr(brain, 'last_plan', None)
+                last_model = getattr(brain, 'last_model_selection', None)
+                last_agent = getattr(brain, 'last_agent_selection', None)
+                recent_decisions = getattr(brain, 'recent_decisions', [])
+
+                snapshot["planner"] = {
+                    "last_plan_id": getattr(last_plan, 'request_id', None) if last_plan else None,
+                    "last_task_type": getattr(last_plan, 'task_type', None).value if last_plan and getattr(last_plan, 'task_type', None) else None,
+                    "last_plan_confidence": getattr(last_plan, 'confidence', None) if last_plan else None,
+                    "selected_model": last_model,
+                    "selected_agent": last_agent,
+                    "recent_decisions": recent_decisions[-8:]
+                }
+        except Exception:
+            pass
+
+        return snapshot
