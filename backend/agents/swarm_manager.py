@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
@@ -133,6 +134,54 @@ class SwarmManager:
             del self.agent_instances[agent_type.value]
             self.logger.info(f"Unregistered agent: {agent_type.value}")
 
+    async def select_agent_for_step(self, step):
+        """Select the most appropriate agent for a given TaskStep.
+
+        Returns (agent_instance, agent_key, reason)
+        """
+        # Candidate agents: prefer ones whose key matches step.agent_type
+        candidates = []
+        reason = ""
+        if step.agent_type:
+            # Exact match by registered agent key
+            candidate = self.agent_instances.get(step.agent_type)
+            if candidate:
+                return candidate, step.agent_type, "explicit agent_type match"
+
+        # Fallback: inspect agent specializations (if available) and pick the first that matches keywords
+        keywords = [w for w in re.findall(r"\w+", step.description.lower())]
+
+        for key, agent in list(self.agent_instances.items()):
+            try:
+                status = None
+                if hasattr(agent, 'get_status'):
+                    status = await agent.get_status()
+                specializations = []
+                if isinstance(status, dict):
+                    specializations = status.get('specializations', [])
+                # Agent name/type based match
+                agent_name = getattr(agent, 'agent_name', '') or key
+                if any(k in agent_name.lower() for k in keywords):
+                    candidates.append((agent, key, 'name_match'))
+                    continue
+                if any(k in ' '.join(specializations).lower() for k in keywords):
+                    candidates.append((agent, key, 'specialization_match'))
+                    continue
+            except Exception:
+                continue
+
+        # Prefer specialization matches, then name matches
+        if candidates:
+            selected = candidates[0]
+            return selected[0], selected[1], selected[2]
+
+        # As a last resort prefer MAIN agent if available
+        main_agent = self.agent_instances.get(AgentType.MAIN.value)
+        if main_agent:
+            return main_agent, AgentType.MAIN.value, "fallback_to_main"
+
+        return None, None, "no_agent_available"
+
     async def submit_task(
         self,
         description: str,
@@ -191,23 +240,34 @@ class SwarmManager:
             responses = []
 
             for step in plan.steps:
-                agent_key = step.agent_type or AgentType.MAIN.value
-                agent = self.agent_instances.get(agent_key)
+                # Agent selection with reasoning and fallback
+                selected_agent, selected_key, selection_reason = await self.select_agent_for_step(step)
 
-                # main_agent steps re-enter the brain's process_input loop,
-                # which would cause infinite recursion. The brain is already
-                # acting as the orchestrator, so skip these steps.
-                if agent_key == AgentType.MAIN.value:
+                # main_agent steps should be skipped as orchestration is handled by brain
+                if selected_key == AgentType.MAIN.value:
                     self.logger.debug(
                         f"Skipping main_agent step '{step.id}' (orchestration already handled by brain)"
                     )
                     continue
 
-                if agent is None:
+                if selected_agent is None:
                     self.logger.warning(
-                        f"No agent registered for '{agent_key}', skipping step '{step.id}'"
+                        f"No suitable agent found for step '{step.id}', skipping"
                     )
                     continue
+
+                # Record last agent selection to the brain for observability
+                try:
+                    if self.brain is not None:
+                        self.brain.last_agent_selection = {
+                            "task_id": getattr(plan, 'request_id', None),
+                            "step_id": step.id,
+                            "agent_key": selected_key,
+                            "reason": selection_reason,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                except Exception:
+                    pass
 
                 context = {
                     "step_id": step.id,
@@ -215,20 +275,20 @@ class SwarmManager:
                     "swarm_context": True
                 }
 
-                if hasattr(agent, "process_request"):
-                    result = await agent.process_request(
+                if hasattr(selected_agent, "process_request"):
+                    result = await selected_agent.process_request(
                         request=plan.original_request,
                         context=context
                     )
-                elif hasattr(agent, "process_message"):
-                    result = await agent.process_message(
+                elif hasattr(selected_agent, "process_message"):
+                    result = await selected_agent.process_message(
                         user_input=plan.original_request,
                         modality="text",
                         context=context
                     )
                 else:
                     self.logger.warning(
-                        f"Agent '{agent_key}' has no process_request/process_message"
+                        f"Agent '{selected_key}' has no process_request/process_message"
                     )
                     continue
 
@@ -238,7 +298,7 @@ class SwarmManager:
                         responses.append(response_text)
                     if result.get("error"):
                         self.logger.error(
-                            f"Step '{step.id}' via '{agent_key}' failed: {response_text}"
+                            f"Step '{step.id}' via '{selected_key}' failed: {response_text}"
                         )
                 else:
                     responses.append(str(result))

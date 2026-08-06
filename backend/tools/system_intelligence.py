@@ -741,7 +741,7 @@ class SystemIntelligence:
         if gpu.get("available") and gpu.get("gpus"):
             gpu_summary = gpu["gpus"][0]
 
-        return {
+        snapshot = {
             "brain_state": brain_state,
             "request_count": request_count,
             "error_count": error_count,
@@ -753,3 +753,25 @@ class SystemIntelligence:
             "processes_total": data.get("processes", {}).get("total", 0),
             "timestamp": datetime.now().isoformat(),
         }
+
+        # Planner / decision metadata (best-effort)
+        try:
+            brain = self.brain
+            if brain is not None:
+                last_plan = getattr(brain, 'last_plan', None)
+                last_model = getattr(brain, 'last_model_selection', None)
+                last_agent = getattr(brain, 'last_agent_selection', None)
+                recent_decisions = getattr(brain, 'recent_decisions', [])
+
+                snapshot["planner"] = {
+                    "last_plan_id": getattr(last_plan, 'request_id', None) if last_plan else None,
+                    "last_task_type": getattr(last_plan, 'task_type', None).value if last_plan and getattr(last_plan, 'task_type', None) else None,
+                    "last_plan_confidence": getattr(last_plan, 'confidence', None) if last_plan else None,
+                    "selected_model": last_model,
+                    "selected_agent": last_agent,
+                    "recent_decisions": recent_decisions[-8:]
+                }
+        except Exception:
+            pass
+
+        return snapshot

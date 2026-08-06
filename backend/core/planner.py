@@ -47,10 +47,14 @@ class TaskStep:
     dependencies: Optional[List[str]] = None
     estimated_time: float = 0.0
     priority: int = 1
+    status: str = "pending"
+    recovery_suggestions: Optional[List[str]] = None
 
     def __post_init__(self):
         if self.dependencies is None:
             self.dependencies = []
+        if self.recovery_suggestions is None:
+            self.recovery_suggestions = []
 
 
 @dataclass
@@ -65,10 +69,17 @@ class ExecutionPlan:
     priority: int
     prompt: str
     context_requirements: Optional[List[str]] = None
+    confidence: float = 0.8
+    routing_metadata: Optional[Dict[str, Any]] = None
+    failure_suggestions: Optional[List[str]] = None
 
     def __post_init__(self):
         if self.context_requirements is None:
             self.context_requirements = []
+        if self.routing_metadata is None:
+            self.routing_metadata = {}
+        if self.failure_suggestions is None:
+            self.failure_suggestions = []
 
 
 class Planner:
@@ -140,6 +151,9 @@ class Planner:
             context
         )
 
+        # Intent classification and confidence scoring
+        intent_label, intent_confidence = await self._classify_intent(user_input, task_type, context)
+
         requires_agents = await self._requires_multi_agent(
             task_type,
             complexity
@@ -165,6 +179,16 @@ class Planner:
             step.estimated_time for step in steps
         )
 
+        # routing metadata helps downstream components understand why
+        routing_metadata = {
+            "intent": intent_label,
+            "intent_confidence": round(float(intent_confidence), 3),
+            "requires_agents": bool(requires_agents),
+            "step_count": len(steps),
+        }
+
+        failure_suggestions = await self._suggest_failure_recovery(user_input, task_type, complexity, steps)
+
         plan = ExecutionPlan(
             request_id=request_id,
             original_request=user_input,
@@ -178,13 +202,16 @@ class Planner:
             context_requirements=[
                 "recent_conversation",
                 "user_preferences"
-            ]
+            ],
+            confidence=float(intent_confidence),
+            routing_metadata=routing_metadata,
+            failure_suggestions=failure_suggestions,
         )
 
         self.logger.info(
             f"Plan created: {task_type.value} | "
             f"{complexity.value} | "
-            f"{len(steps)} steps"
+            f"{len(steps)} steps | intent={intent_label}({intent_confidence:.2f})"
         )
 
         return plan
@@ -316,6 +343,83 @@ class Planner:
             return ComplexityLevel.MODERATE
 
         return ComplexityLevel.SIMPLE
+
+
+    async def _classify_intent(
+        self,
+        user_input: str,
+        task_type: TaskType,
+        context: List[Dict[str, Any]]
+    ) -> (str, float):
+        """Lightweight intent classifier returning a label and confidence.
+
+        This is intentionally heuristic to avoid extra dependencies. It returns
+        a simple intent label (e.g., 'simple_question', 'coding_task',
+        'research_task', 'automation', 'system_operation', 'multi_step') and a
+        confidence score between 0.0 and 1.0. More advanced classifiers can be
+        plugged in later.
+        """
+        text = user_input.lower()
+        # Base confidence derived from length and explicit keywords
+        words = len(user_input.split())
+        confidence = 0.75
+
+        if words < 8 and task_type == TaskType.GENERAL_QUESTION:
+            confidence = 0.92
+            return "simple_question", confidence
+
+        if task_type == TaskType.CODE_GENERATION:
+            confidence = 0.9 if self._matches_keywords(text, ["code", "implement", "function"]) else 0.75
+            return "coding_task", confidence
+
+        if task_type == TaskType.RESEARCH:
+            confidence = 0.88 if self._matches_keywords(text, ["research", "compare", "investigate"]) else 0.7
+            return "research_task", confidence
+
+        if task_type in (TaskType.AUTOMATION, TaskType.SYSTEM_COMMAND, TaskType.FILE_OPERATION):
+            confidence = 0.9
+            return "automation", confidence
+
+        if task_type == TaskType.PLANNING or (words > 30 and self._matches_keywords(text, ["plan", "architecture", "roadmap"])):
+            confidence = 0.85
+            return "multi_step", confidence
+
+        if task_type == TaskType.SYSTEM_ANALYSIS:
+            return "system_operation", 0.95
+
+        # Fallback
+        return "general_assistant", round(min(0.9, confidence), 3)
+
+
+    async def _suggest_failure_recovery(
+        self,
+        user_input: str,
+        task_type: TaskType,
+        complexity: ComplexityLevel,
+        steps: List[TaskStep]
+    ) -> List[str]:
+        """Generate brief recovery suggestions if tasks fail. These are human readable
+        hints presented to the user or operator to recover from typical failures.
+        """
+        suggestions: List[str] = []
+
+        if task_type == TaskType.CODE_GENERATION:
+            suggestions.append("If code generation fails, ask for a minimal reproducible example or smaller scope.")
+            suggestions.append("Run unit tests locally and provide failing stack traces for debugging.")
+
+        if task_type == TaskType.RESEARCH:
+            suggestions.append("If results are incomplete, request additional sources or a narrower query.")
+
+        if task_type in (TaskType.AUTOMATION, TaskType.SYSTEM_COMMAND):
+            suggestions.append("Verify the target system permissions and run with --dry-run for safety.")
+
+        if any(s.priority > 2 for s in steps):
+            suggestions.append("Prioritize critical steps and run them sequentially to isolate failures.")
+
+        if not suggestions:
+            suggestions.append("If the task fails, try simplifying the request or request a step-by-step plan.")
+
+        return suggestions
 
 
     async def _requires_multi_agent(

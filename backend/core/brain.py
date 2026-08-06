@@ -56,6 +56,12 @@ class JARVIS_Brain:
         self.system_intelligence = SystemIntelligence(brain=self)
         self.system_agent: Optional[SystemAgent] = None
 
+        # Observability metadata for runtime intelligence
+        self.last_plan = None
+        self.last_model_selection = None
+        self.last_agent_selection = None
+        self.recent_decisions: list = []
+
         self.logger = logging.getLogger(__name__)
 
         self.start_time = datetime.now()
@@ -225,11 +231,23 @@ class JARVIS_Brain:
                 personality_state=await self.personality.get_current_state()
             )
 
+            # Persist plan for observability
+            self.last_plan = plan
+
             model_selection = await self.model_router.select_model(
                 task_type=plan.task_type,
                 complexity=plan.complexity,
                 context=context
             )
+
+            # Persist model selection metadata for diagnostics
+            self.last_model_selection = {
+                "model": model_selection.model,
+                "reason": model_selection.reason,
+                "temperature": model_selection.temperature,
+                "max_tokens": model_selection.max_tokens,
+                "confidence": getattr(model_selection, 'confidence', None)
+            }
 
             if plan.task_type == TaskType.SYSTEM_ANALYSIS:
                 result = await self._handle_system_analysis(
