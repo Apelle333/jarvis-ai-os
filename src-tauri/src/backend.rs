@@ -37,14 +37,33 @@ fn resolve_backend_dir() -> Option<PathBuf> {
 }
 
 fn find_python(backend_dir: &Path) -> Option<PathBuf> {
-    let venv_pythonw = backend_dir.join("venv").join("Scripts").join("pythonw.exe");
-    if venv_pythonw.exists() {
-        return Some(venv_pythonw);
+    // Prefer common venv names in order: .venv, venv, .venv in parent, then system python.
+    let candidates = vec![
+        backend_dir.join(".venv").join("Scripts").join("pythonw.exe"),
+        backend_dir.join(".venv").join("Scripts").join("python.exe"),
+        backend_dir.join("venv").join("Scripts").join("pythonw.exe"),
+        backend_dir.join("venv").join("Scripts").join("python.exe"),
+    ];
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Some(candidate);
+        }
     }
-    let venv_python = backend_dir.join("venv").join("Scripts").join("python.exe");
-    if venv_python.exists() {
-        return Some(venv_python);
+
+    // If user provided a JARVIS_BACKEND_VENV env var, honor it (helps installers)
+    if let Ok(venv_path) = std::env::var("JARVIS_BACKEND_VENV") {
+        let p = PathBuf::from(venv_path);
+        let p_w = p.join("Scripts").join("pythonw.exe");
+        let p = p.join("Scripts").join("python.exe");
+        if p_w.exists() {
+            return Some(p_w);
+        }
+        if p.exists() {
+            return Some(p);
+        }
     }
+
     // fall back to anything on PATH
     for name in ["pythonw.exe", "python.exe"] {
         if which(name).is_some() {
