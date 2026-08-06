@@ -17,6 +17,11 @@ interface Snapshot {
     temperature_c?: number;
   };
   processes_total?: number;
+  planner?: {
+    last_plan_id?: string | null;
+    last_task_type?: string | null;
+    last_plan_confidence?: number | null;
+  };
 }
 
 interface Status {
