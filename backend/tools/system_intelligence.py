@@ -615,9 +615,57 @@ class SystemIntelligence:
         status["hardware"] = await self.get_hardware_info()
         status["agents"] = await self.get_agent_status()
         status["memory"] = await self.get_memory_status()
+        status["voice"] = await self.get_voice_status()
         status["timestamp"] = datetime.now().isoformat()
 
         return status
+
+    async def get_voice_status(self) -> Dict[str, Any]:
+        """Get voice system status (STT/TTS) by inspecting api.voice singletons when available."""
+        try:
+            try:
+                from api import voice as voice_api  # type: ignore
+            except Exception:
+                voice_api = None
+
+            stt_status = {"status": "unavailable"}
+            tts_status = {"status": "unavailable"}
+
+            if voice_api is not None:
+                whisper = getattr(voice_api, 'whisper_stt', None)
+                piper = getattr(voice_api, 'piper_tts', None)
+                # If singletons not created, try to get them through getters
+                if whisper is None and hasattr(voice_api, 'get_stt'):
+                    try:
+                        whisper = voice_api.get_stt()
+                    except Exception:
+                        whisper = None
+                if piper is None and hasattr(voice_api, 'get_tts'):
+                    try:
+                        piper = voice_api.get_tts()
+                    except Exception:
+                        piper = None
+
+                if whisper is not None and hasattr(whisper, 'get_status'):
+                    try:
+                        stt_status = await whisper.get_status()
+                    except Exception as e:
+                        stt_status = {"status": "error", "error": str(e)}
+
+                if piper is not None and hasattr(piper, 'get_status'):
+                    try:
+                        tts_status = await piper.get_status()
+                    except Exception as e:
+                        tts_status = {"status": "error", "error": str(e)}
+
+            return {
+                "speech_to_text": stt_status,
+                "text_to_speech": tts_status,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve voice status: {e}")
+            return {"error": str(e)}
 
     # ------------------------------------------------------------------
     # System scans (memory integration)

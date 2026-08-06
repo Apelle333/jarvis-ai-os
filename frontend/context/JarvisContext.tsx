@@ -97,6 +97,36 @@ export const JarvisProvider = ({ children }: { children: React.ReactNode }) => {
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'status') setStatus(msg);
+            // Voice state messages: update local voice state
+            if (msg.type === 'voice_state') {
+              const state = msg.state;
+              if (state === 'listening') {
+                setListening(true);
+                setProcessing(false);
+                setSpeaking(false);
+              } else if (state === 'transcribing' || state === 'thinking' || state === 'processing') {
+                setListening(false);
+                setProcessing(true);
+                setSpeaking(false);
+              } else if (state === 'speaking') {
+                setListening(false);
+                setProcessing(false);
+                setSpeaking(true);
+              } else if (state === 'idle') {
+                setListening(false);
+                setProcessing(false);
+                setSpeaking(false);
+              } else if (state === 'error') {
+                setListening(false);
+                setProcessing(false);
+                setSpeaking(false);
+              }
+
+              // Optional text payload
+              if (msg.text) {
+                setVoiceText(msg.text);
+              }
+            }
           } catch {
             // ignore non-JSON frames
           }

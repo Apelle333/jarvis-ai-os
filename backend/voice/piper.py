@@ -11,6 +11,7 @@ import tempfile
 from typing import Dict, Any, List, Optional
 import json
 import wave
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class PiperTTS:
         self.default_voice = "en_US-lessac-medium"
         self.available_voices = {}
         self.voice_cache = {}  # Cache for loaded voices
+        self.last_error: Optional[str] = None
+        self.synthetic_fallbacks = 0
 
     async def initialize(self):
         """Initialize the Piper TTS"""
@@ -147,6 +150,23 @@ class PiperTTS:
         else:
             self.logger.warning("No voice models found")
 
+    def _silent_wav(self, duration: float = 0.25, sample_rate: int = 22050) -> bytes:
+        """Generate a short silent WAV as a safe fallback when TTS fails."""
+        try:
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(sample_rate)
+                n_frames = int(max(1, duration * sample_rate))
+                silence = (b'\x00\x00') * n_frames
+                wf.writeframes(silence)
+            return buf.getvalue()
+        except Exception as e:
+            # As a last resort, return empty bytes
+            self.logger.error(f"Failed to generate silent WAV: {e}")
+            return b""
+
     async def synthesize(
         self,
         text: str,
@@ -169,11 +189,17 @@ class PiperTTS:
         if not self.is_initialized:
             await self.initialize()
 
+        # If Piper is not available, return a short silent WAV as a safe fallback
         if not self.piper_path:
-            raise RuntimeError("Piper TTS is not available - executable not found")
+            self.last_error = "piper_executable_not_found"
+            self.logger.warning("Piper executable not found - returning silent fallback audio")
+            self.synthetic_fallbacks += 1
+            return self._silent_wav(sample_rate=sample_rate)
 
+        # Empty text -> return a short silent WAV instead of raising
         if not text or not text.strip():
-            raise ValueError("Text cannot be empty")
+            self.logger.warning("Empty text provided to Piper.synthesize - returning silent fallback audio")
+            return self._silent_wav(sample_rate=sample_rate)
 
         voice_name = voice or self.default_voice
         if voice_name not in self.available_voices:
@@ -181,7 +207,10 @@ class PiperTTS:
             voice_name = self.default_voice
 
         if voice_name not in self.available_voices:
-            raise RuntimeError(f"No voices available - cannot synthesize speech")
+            self.last_error = "no_voices_available"
+            self.logger.error("No voices available - cannot synthesize speech, returning silent fallback")
+            self.synthetic_fallbacks += 1
+            return self._silent_wav(sample_rate=sample_rate)
 
         try:
             # Get voice info
@@ -259,8 +288,11 @@ class PiperTTS:
                     pass
 
         except Exception as e:
+            # Log and return a short silent WAV as a safe fallback instead of raising
+            self.last_error = str(e)
+            self.synthetic_fallbacks += 1
             self.logger.error(f"Error synthesizing speech: {e}", exc_info=True)
-            raise
+            return self._silent_wav(sample_rate=sample_rate)
 
     async def synthesize_to_file(
         self,
@@ -355,7 +387,9 @@ class PiperTTS:
             "default_voice": self.default_voice,
             "voices_count": len(self.available_voices),
             "available_voices": list(self.available_voices.keys()),
-            "status": "ready" if self.is_initialized else "not_initialized"
+            "status": "ready" if self.is_initialized else "not_initialized",
+            "last_error": self.last_error,
+            "synthetic_fallbacks": self.synthetic_fallbacks
         }
 
     async def shutdown(self):
