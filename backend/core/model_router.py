@@ -201,6 +201,46 @@ class ModelRouter:
             return complexity.value
         return str(complexity)
 
+    def _determine_role_for_task(self, task_type: TaskType) -> str:
+        """Map a TaskType to a routing role.
+
+        Keeps a single authoritative mapping so tests and telemetry can rely on
+        stable role names (reasoning, coding, general, personality, fast).
+        """
+        if task_type in [
+            TaskType.CODE_GENERATION,
+            TaskType.CODE_REVIEW,
+            TaskType.DEBUGGING,
+            TaskType.REFACTORING,
+            TaskType.ARCHITECTURE_DESIGN,
+        ]:
+            return "coding"
+
+        if task_type in [
+            TaskType.PLANNING,
+            TaskType.RESEARCH,
+            TaskType.ANALYSIS,
+            TaskType.SYSTEM_ANALYSIS,
+        ]:
+            return "reasoning"
+
+        if task_type in [
+            TaskType.GENERAL_QUESTION,
+            TaskType.CREATIVE_WRITING,
+            TaskType.DOCUMENTATION,
+        ]:
+            return "general"
+
+        if task_type in [
+            TaskType.FILE_OPERATION,
+            TaskType.SYSTEM_COMMAND,
+            TaskType.AUTOMATION,
+        ]:
+            return "fast"
+
+        # Default fallback role
+        return "general"
+
     async def select_model(
         self,
         task_type: TaskType,
