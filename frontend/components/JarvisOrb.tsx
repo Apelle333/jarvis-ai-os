@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useJarvis } from '@/context/JarvisContext';
 
-type OrbState = 'idle' | 'listening' | 'processing' | 'speaking' | 'executing';
+type OrbState = 'idle' | 'listening' | 'processing' | 'speaking' | 'executing' | 'error';
 
 const PARTICLE_COUNT = 8;
 
