@@ -230,6 +230,16 @@ body {
   border: 1px solid rgba(34, 211, 238, 0.16);
 }
 
+.hud-static-core {
+  width: 260px;
+  height: 260px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 42% 38%, rgba(224, 250, 255, 0.95), rgba(34, 211, 238, 0.45) 35%, rgba(8, 47, 73, 0.18) 68%, transparent 72%);
+  border: 1px solid rgba(103, 232, 249, 0.28);
+  box-shadow: 0 0 80px rgba(34, 211, 238, 0.22);
+}
+
 .hud-dot-on {
   background: #34d399;
   box-shadow: 0 0 8px rgba(52, 211, 153, 0.9);
@@ -266,6 +276,15 @@ body {
 .hud-win-btn:hover {
   background: rgba(34, 211, 238, 0.12);
   color: #e0faff;
+}
+
+.hud-win-btn:focus-visible,
+.hud-icon-btn:focus-visible,
+.hud-send-btn:focus-visible,
+.hud-root input:focus-visible,
+.hud-root textarea:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.95);
+  outline-offset: 3px;
 }
 
 .hud-icon-btn {
@@ -349,4 +368,19 @@ body {
 
 .tauri .hud-nebula {
   opacity: 0.92;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .hud-scanlines {
+    opacity: 0.35;
+  }
 }

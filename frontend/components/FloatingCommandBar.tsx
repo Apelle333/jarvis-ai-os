@@ -9,6 +9,7 @@ interface ChatMessage {
   id: string;
   content: string;
   isUser: boolean;
+  tone?: 'normal' | 'status' | 'error';
 }
 
 /**
@@ -20,9 +21,12 @@ export default function FloatingCommandBar() {
     backendUrl,
     clientId,
     isListening,
+    isSpeaking,
     setListening,
     setProcessing,
-    setSpeaking
+    setSpeaking,
+    backendOnline,
+    wsConnected
   } = useJarvis();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -31,6 +35,7 @@ export default function FloatingCommandBar() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
+  const cancelRecordingRef = useRef(false);
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -46,6 +51,18 @@ export default function FloatingCommandBar() {
   const sendMessage = async () => {
     const text = input.trim();
     if (!text || isLoading) return;
+    if (!backendOnline) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substr(2, 9),
+          content: 'Backend is disconnected. Start FastAPI on port 8000, then retry.',
+          isUser: false,
+          tone: 'error'
+        }
+      ]);
+      return;
+    }
 
     const userMessage: ChatMessage = {
       id: Math.random().toString(36).substr(2, 9),
@@ -77,7 +94,8 @@ export default function FloatingCommandBar() {
         {
           id: Math.random().toString(36).substr(2, 9),
           content: `Connection lost while reaching the JARVIS core. Retry when the link is stable.`,
-          isUser: false
+          isUser: false,
+          tone: 'error'
         }
       ]);
     } finally {
@@ -114,7 +132,18 @@ export default function FloatingCommandBar() {
       URL.revokeObjectURL(audio.src);
       setSpeaking(false);
     };
-    audio.onerror = () => setSpeaking(false);
+    audio.onerror = () => {
+      setSpeaking(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(36).slice(2, 11),
+          content: 'Voice playback failed. The response is still available as text.',
+          isUser: false,
+          tone: 'error'
+        }
+      ]);
+    };
     await audio.play();
   };
 
@@ -148,6 +177,15 @@ export default function FloatingCommandBar() {
       if (data.audio_available) {
         await playResponseAudio(data.audio, data.audio_mime);
       } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(36).slice(2, 11),
+            content: 'Native voice output is unavailable. Using browser speech fallback.',
+            isUser: false,
+            tone: 'status'
+          }
+        ]);
         speakWithBrowser(data.response || '');
       }
     } catch {
@@ -156,7 +194,8 @@ export default function FloatingCommandBar() {
         {
           id: Math.random().toString(36).slice(2, 11),
           content: 'Voice processing failed. Check microphone permission and the JARVIS voice services.',
-          isUser: false
+          isUser: false,
+          tone: 'error'
         }
       ]);
     } finally {
@@ -166,18 +205,26 @@ export default function FloatingCommandBar() {
   };
 
   const toggleRecording = async () => {
+    if (isLoading) return;
     if (recorderRef.current?.state === 'recording') {
+      cancelRecordingRef.current = false;
       recorderRef.current.stop();
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       setMessages((prev) => [
         ...prev,
-        { id: Math.random().toString(36).slice(2, 11), content: 'Voice input is not supported by this browser.', isUser: false }
+        {
+          id: Math.random().toString(36).slice(2, 11),
+          content: 'Voice input is not supported by this browser.',
+          isUser: false,
+          tone: 'error'
+        }
       ]);
       return;
     }
     try {
+      cancelRecordingRef.current = false;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       recordingChunksRef.current = [];
@@ -189,6 +236,12 @@ export default function FloatingCommandBar() {
       recorder.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
         recorderRef.current = null;
+        if (cancelRecordingRef.current) {
+          cancelRecordingRef.current = false;
+          recordingChunksRef.current = [];
+          setListening(false);
+          return;
+        }
         void submitRecording(new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' }));
       };
       recorder.start();
@@ -197,10 +250,41 @@ export default function FloatingCommandBar() {
       setListening(false);
       setMessages((prev) => [
         ...prev,
-        { id: Math.random().toString(36).slice(2, 11), content: 'Microphone access was not granted.', isUser: false }
+        {
+          id: Math.random().toString(36).slice(2, 11),
+          content: 'Microphone access was not granted. Enable microphone permission and try again.',
+          isUser: false,
+          tone: 'error'
+        }
       ]);
     }
   };
+
+  const cancelRecording = () => {
+    if (recorderRef.current?.state === 'recording') {
+      cancelRecordingRef.current = true;
+      recorderRef.current.stop();
+    }
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape' && isListening) {
+      e.preventDefault();
+      cancelRecording();
+      return;
+    }
+    handleKeyDown(e);
+  };
+
+  const statusText = isListening
+    ? 'Recording - Esc cancels'
+    : isLoading
+      ? 'Planning response'
+      : isSpeaking
+        ? 'Speaking'
+        : backendOnline
+          ? 'Ready for command'
+          : 'Backend disconnected';
 
   return (
     <motion.div
@@ -229,10 +313,14 @@ export default function FloatingCommandBar() {
                     {msg.isUser ? 'YOU' : 'JARVIS'}
                   </p>
                   <div
-                    className={`inline-block max-w-full text-left text-xs leading-relaxed ${
+                    className={`inline-block max-w-full text-left text-xs leading-relaxed rounded-lg px-2.5 py-1.5 ${
                       msg.isUser
-                        ? 'text-cyan-100/90'
-                        : 'text-white/85'
+                        ? 'text-cyan-50 bg-cyan-400/10'
+                        : msg.tone === 'error'
+                          ? 'text-rose-100 bg-rose-500/10 border border-rose-300/15'
+                          : msg.tone === 'status'
+                            ? 'text-sky-100 bg-sky-400/10 border border-sky-300/10'
+                            : 'text-white/90 bg-white/[0.04]'
                     } ${msg.isUser ? '' : 'prose-sm'}`}
                     dangerouslySetInnerHTML={{
                       __html: marked.parse(msg.content) as string
@@ -258,7 +346,16 @@ export default function FloatingCommandBar() {
       {/* Command bar */}
       <div className="pointer-events-auto relative">
         <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-cyan-500/30 via-sky-400/20 to-cyan-500/30 blur-md opacity-60" />
-        <div className="relative flex items-center gap-2 px-3 py-2.5 rounded-2xl hud-panel">
+        <div className="relative rounded-2xl hud-panel p-2.5">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
+            <span className={`hud-status-text ${backendOnline ? 'text-cyan-100/80' : 'text-rose-200/90'}`}>
+              {statusText}
+            </span>
+            <span className="hud-micro">
+              WS {wsConnected ? 'CONNECTED' : 'RECONNECTING'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
           <button
             onClick={() => void toggleRecording()}
             className={`hud-icon-btn ${isListening ? 'hud-icon-btn-active' : ''}`}
@@ -275,14 +372,28 @@ export default function FloatingCommandBar() {
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Command JARVIS..."
+            onKeyDown={handleInputKeyDown}
+            placeholder={backendOnline ? 'Ask or command JARVIS...' : 'Waiting for backend on port 8000...'}
             className="flex-1 bg-transparent outline-none text-sm text-white/90 placeholder:text-cyan-200/30 tracking-wide min-w-0"
+            aria-label="Command JARVIS"
           />
+          {isListening && (
+            <button
+              onClick={cancelRecording}
+              className="hud-icon-btn"
+              aria-label="Cancel recording"
+              title="Cancel recording"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6 6 18" />
+                <path d="m6 6 12 12" />
+              </svg>
+            </button>
+          )}
 
           <button
             onClick={sendMessage}
-            disabled={isLoading || !input.trim()}
+            disabled={isLoading || !input.trim() || !backendOnline}
             className={`hud-send-btn ${isLoading ? 'hud-send-active' : ''}`}
             aria-label="Send"
           >
@@ -297,6 +408,7 @@ export default function FloatingCommandBar() {
               </svg>
             )}
           </button>
+          </div>
         </div>
       </div>
     </motion.div>

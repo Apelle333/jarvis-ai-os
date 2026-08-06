@@ -24,7 +24,9 @@ export function createGlowTexture(
   gradient.addColorStop(1, color.replace('1)', '0)'));
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
 }
 
 export function useGlowTexture(
