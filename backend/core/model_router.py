@@ -278,6 +278,23 @@ class ModelRouter:
         full_reason = f"{reason} | routing_meta={routing_meta}"
         self.logger.info(f"Selected model {selected_model} for {task_type.value} (role={role}) - candidates={candidates}")
 
+        # Emit model_state event (best-effort)
+        try:
+            from api.websocket import manager  # type: ignore
+            payload = {
+                "type": "model_state",
+                "data": {
+                    "model": selected_model,
+                    "category": role,
+                    "reason": reason,
+                    "routing_meta": routing_meta,
+                    "fallback_used": (selected_model != (self.role_map.get(role, [None])[0] if role in self.role_map else None))
+                }
+            }
+            asyncio.create_task(manager.broadcast(payload))
+        except Exception:
+            pass
+
         return ModelSelection(
             model=selected_model,
             confidence=0.9,

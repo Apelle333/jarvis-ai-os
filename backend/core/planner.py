@@ -214,6 +214,28 @@ class Planner:
             f"{len(steps)} steps | intent={intent_label}({intent_confidence:.2f})"
         )
 
+        # Emit planner_state event to websocket manager (best-effort, non-blocking)
+        try:
+            from api.websocket import manager  # type: ignore
+            event = {
+                "type": "planner_state",
+                "data": {
+                    "plan_id": plan.request_id,
+                    "intent": routing_metadata.get("intent"),
+                    "confidence": float(plan.confidence or 0.0),
+                    "task_type": plan.task_type.value if plan.task_type else None,
+                    "steps": [
+                        {"id": s.id, "description": s.description, "agent_type": s.agent_type, "status": s.status}
+                        for s in plan.steps
+                    ]
+                }
+            }
+            # fire-and-forget
+            asyncio.create_task(manager.broadcast(event))
+        except Exception:
+            # Do not fail planning if websocket not available
+            pass
+
         return plan
 
 

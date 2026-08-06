@@ -146,6 +146,21 @@ class SwarmManager:
             # Exact match by registered agent key
             candidate = self.agent_instances.get(step.agent_type)
             if candidate:
+                # Emit agent_state selected
+                try:
+                    from api.websocket import manager  # type: ignore
+                    payload = {
+                        "type": "agent_state",
+                        "data": {
+                            "agent": step.agent_type,
+                            "reason": "explicit agent_type match",
+                            "status": "selected",
+                            "step_id": step.id
+                        }
+                    }
+                    asyncio.create_task(manager.broadcast(payload))
+                except Exception:
+                    pass
                 return candidate, step.agent_type, "explicit agent_type match"
 
         # Fallback: inspect agent specializations (if available) and pick the first that matches keywords
@@ -173,11 +188,40 @@ class SwarmManager:
         # Prefer specialization matches, then name matches
         if candidates:
             selected = candidates[0]
+            # broadcast selection
+            try:
+                from api.websocket import manager  # type: ignore
+                payload = {
+                    "type": "agent_state",
+                    "data": {
+                        "agent": selected[1],
+                        "reason": selected[2],
+                        "status": "selected",
+                        "step_id": step.id
+                    }
+                }
+                asyncio.create_task(manager.broadcast(payload))
+            except Exception:
+                pass
             return selected[0], selected[1], selected[2]
 
         # As a last resort prefer MAIN agent if available
         main_agent = self.agent_instances.get(AgentType.MAIN.value)
         if main_agent:
+            try:
+                from api.websocket import manager  # type: ignore
+                payload = {
+                    "type": "agent_state",
+                    "data": {
+                        "agent": AgentType.MAIN.value,
+                        "reason": "fallback_to_main",
+                        "status": "selected",
+                        "step_id": step.id
+                    }
+                }
+                asyncio.create_task(manager.broadcast(payload))
+            except Exception:
+                pass
             return main_agent, AgentType.MAIN.value, "fallback_to_main"
 
         return None, None, "no_agent_available"
@@ -374,6 +418,21 @@ class SwarmManager:
         try:
             self.logger.info(f"Executing task {task.task_id}: {task.description}")
 
+            # Broadcast task start
+            try:
+                from api.websocket import manager  # type: ignore
+                asyncio.create_task(manager.broadcast({
+                    "type": "agent_state",
+                    "data": {
+                        "agent": task.required_agents[0].value if task.required_agents else None,
+                        "task_id": task.task_id,
+                        "status": "started",
+                        "description": task.description
+                    }
+                }))
+            except Exception:
+                pass
+
             # Check if all required agents are available
             missing_agents = [agent for agent in task.required_agents if agent not in self.agents]
             if missing_agents:
@@ -417,6 +476,21 @@ class SwarmManager:
             self.metrics["average_completion_time"] = total_time / self.metrics["tasks_processed"]
 
             self.logger.info(f"Completed task {task.task_id} with status: {task.status}")
+            # Broadcast task completion
+            try:
+                from api.websocket import manager  # type: ignore
+                asyncio.create_task(manager.broadcast({
+                    "type": "agent_state",
+                    "data": {
+                        "agent": task.results.get("agent_used") if task.results else None,
+                        "task_id": task.task_id,
+                        "status": "completed" if task.status == "completed" else "failed",
+                        "success": task.results.get("success") if task.results else None,
+                        "result": task.results
+                    }
+                }))
+            except Exception:
+                pass
 
         except Exception as e:
             self.logger.error(f"Error executing task {task.task_id}: {e}", exc_info=True)
