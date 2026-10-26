@@ -14,6 +14,16 @@ Rather than relying on a single chatbot interface, JARVIS combines **LLM inferen
 
 ---
 
+## For a technical portfolio review
+
+This independent prototype demonstrates Python/TypeScript integration rather
+than a production-ready autonomous agent. Useful entry points are the
+[chat API](backend/api/chat.py), [application boundary](backend/main.py),
+[model routing](backend/core/model_router.py), and [architecture](ARCHITECTURE.md).
+Some endpoints are placeholders, and model/voice dependencies require local
+setup. Keep the application local; review computer-control permissions before
+using it. No customer outcomes or production-readiness claim is implied.
+
 ## Overview
 
 JARVIS is designed around a central Python orchestration layer that connects multiple subsystems:
