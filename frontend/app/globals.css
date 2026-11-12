@@ -384,3 +384,25 @@ body {
     opacity: 0.35;
   }
 }
+
+
+/* Glassmorphism refresh — preserve the cyan HUD identity. */
+.hud-panel {
+  background: linear-gradient(145deg, rgba(18, 37, 58, 0.74), rgba(5, 13, 25, 0.68));
+  border-color: rgba(144, 235, 255, 0.2);
+  backdrop-filter: blur(22px) saturate(145%);
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+  box-shadow: 0 20px 58px -24px rgba(0, 0, 0, 0.86), inset 0 1px 0 rgba(210, 250, 255, 0.12), inset 0 0 28px rgba(34, 211, 238, 0.06);
+}
+.hud-mini-cell, .hud-chip, .hud-icon-btn {
+  background-color: rgba(13, 30, 48, 0.62);
+  border-color: rgba(125, 211, 252, 0.2);
+  backdrop-filter: blur(14px) saturate(135%);
+  -webkit-backdrop-filter: blur(14px) saturate(135%);
+}
+.hud-panel, .hud-mini-cell, .hud-icon-btn { transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease; }
+.hud-mini-cell:hover, .hud-icon-btn:hover { border-color: rgba(103, 232, 249, 0.4); box-shadow: 0 8px 26px rgba(8, 145, 178, 0.12); }
+@supports not ((backdrop-filter: blur(1px))) {
+  .hud-panel { background: rgba(8, 19, 34, 0.94); }
+  .hud-mini-cell, .hud-chip, .hud-icon-btn { background-color: rgba(8, 20, 35, 0.92); }
+}
